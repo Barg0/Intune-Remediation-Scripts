@@ -1,10 +1,16 @@
-# Script version:   2025-04-26 10:00
+# Script version:   2025-05-29 14:05
 # Script author:    Barg0
 
 # ---------------------------[ Script Start Timestamp ]---------------------------
 
 # Capture start time to log script duration
 $scriptStartTime = Get-Date
+
+# ---------------------------[ Script name ]---------------------------
+
+# Script name used for folder/log naming
+$scriptName = "Printer - PRINTERNAME"
+$logFileName = "remediation.log"
 
 # ---------------------------[ Shared Printers ]---------------------------
 
@@ -16,29 +22,26 @@ $sharedPrinters = @(
 # ---------------------------[ Logging Setup ]---------------------------
 
 # Logging control switches
-$log = 1                         # 1 = Enable logging, 0 = Disable logging
-$EnableLogFile = $true           # Set to $false to disable file output
-
-# Application name used for folder/log naming
-$scriptName = "Printer - PRINTERNAME"
+$log = $true                     # Set to $false to disable logging in shell
+$enableLogFile = $true           # Set to $false to disable file output
 
 # Define the log output location
 $LogFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$scriptName"
-$LogFile = "$LogFileDirectory\remediation.log"
+$logFile = "$logFileDirectory\$logFileName"
 
 # Ensure the log directory exists
-if (-not (Test-Path $LogFileDirectory)) {
-    New-Item -ItemType Directory -Path $LogFileDirectory -Force | Out-Null
+if ($enableLogFile -and -not (Test-Path $logFileDirectory)) {
+    New-Item -ItemType Directory -Path $logFileDirectory -Force | Out-Null
 }
 
 # Function to write structured logs to file and console
 function Write-Log {
     param ([string]$Message, [string]$Tag = "Info")
 
-    if ($log -ne 1) { return } # Exit if logging is disabled
+    if (-not $log) { return } # Exit if logging is disabled
 
     $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-    $tagList = @("Start", "Check", "Info", "Success", "Error", "End")
+    $tagList = @("Start", "Check", "Info", "Success", "Error", "Debug", "End")
     $rawTag = $Tag.Trim()
 
     if ($tagList -contains $rawTag) {
@@ -54,6 +57,7 @@ function Write-Log {
         "Info"    { "Yellow" }
         "Success" { "Green" }
         "Error"   { "Red" }
+        "Debug"   { "DarkYellow"}
         "End"     { "Cyan" }
         default   { "White" }
     }
@@ -61,8 +65,8 @@ function Write-Log {
     $logMessage = "$timestamp [  $rawTag ] $Message"
 
     # Write to file if enabled
-    if ($EnableLogFile) {
-        "$logMessage" | Out-File -FilePath $LogFile -Append
+    if ($enableLogFile) {
+        "$logMessage" | Out-File -FilePath $logFile -Append
     }
 
     # Write to console with color formatting
@@ -73,10 +77,24 @@ function Write-Log {
     Write-Host "$Message"
 }
 
-# ---------------------------[ Script Execution ]---------------------------
+# ---------------------------[ Exit Function ]---------------------------
+
+function Complete-Script {
+    param([int]$ExitCode)
+    $scriptEndTime = Get-Date
+    $duration = $scriptEndTime - $scriptStartTime
+    Write-Log "Script execution time: $($duration.ToString("hh\:mm\:ss\.ff"))" -Tag "Info"
+    Write-Log "Exit Code: $ExitCode" -Tag "Info"
+    Write-Log "======== Script Completed ========" -Tag "End"
+    exit $ExitCode
+}
+
+# ---------------------------[ Script Start ]---------------------------
 
 Write-Log "======== Remediation Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
+
+# ---------------------------[ Mount Printers ]---------------------------
 
 foreach ($printerPath in $sharedPrinters) {
     try {
@@ -110,18 +128,8 @@ foreach ($printerPath in $sharedPrinters) {
 
 if ($missingPrinters.Count -eq 0) {
     Write-Log "All printers are installed correctly." "Success"
-    $exitCode = 0
+    Complete-Script -ExitCode 0
 } else {
     Write-Log "$($missingPrinters.Count) printer(s) are still missing." "Error"
-    $exitCode = 1
+    Complete-Script -ExitCode 1
 }
-
-# ---------------------------[ Script End ]---------------------------
-
-# Measure and log total execution time
-$scriptEndTime = Get-Date
-$duration = $scriptEndTime - $scriptStartTime
-Write-Log "Script execution time: $($duration.ToString("hh\:mm\:ss\.ff"))" -Tag "Info"
-Write-Log "Exit Code: $($exitCode)" -Tag "Info"
-Write-Log "======== Remediation Script Completed ========" -Tag "End"
-exit $exitCode
