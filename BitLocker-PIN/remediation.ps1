@@ -7,7 +7,7 @@ $logFileName = "remediation.log"
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
-$logDebug      = $true   # Set to $true to capture verbose Debug logs when isolating issues
+$logDebug      = $false   # Set to $true to capture verbose Debug logs when isolating issues
 $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true

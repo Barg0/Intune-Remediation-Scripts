@@ -3,11 +3,11 @@ $scriptStartTime = Get-Date
 
 # ---------------------------[ Script Name ]---------------------------
 $scriptName  = "BitLocker-PIN"
-$logFileName = "detection.log"
+$logFileName = "remove.log"
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
-$logDebug      = $false   # Set to $true to capture verbose Debug logs when isolating issues
+$logDebug      = $true
 $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
@@ -92,54 +92,65 @@ function Complete-Script {
 $ErrorActionPreference = 'Stop'
 
 Write-Log "======== Script Started ========" -Tag "Start"
-Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
+Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName (REMOVE)" -Tag "Info"
 
 try {
+    Import-Module BitLocker -ErrorAction Stop
+    Write-Log "Imported BitLocker module" -Tag "Run"
+
     $osVolume = Get-BitLockerVolume | Where-Object { $_.VolumeType -eq 'OperatingSystem' }
     Write-Log "Retrieved OS volume: $($osVolume.MountPoint)" -Tag "Get"
-    if ($osVolume) {
-        Write-Log "OS volume: MountPoint=$($osVolume.MountPoint) | VolumeStatus=$($osVolume.VolumeStatus) | EncryptionPercentage=$($osVolume.EncryptionPercentage) | KeyProtectorCount=$($osVolume.KeyProtector.Count)" -Tag "Debug"
-        if ($osVolume.KeyProtector) {
-            $protectorTypes = ($osVolume.KeyProtector | ForEach-Object { $_.KeyProtectorType }) -join ','
-            Write-Log "Key protectors: $protectorTypes" -Tag "Debug"
+
+    if (-not $osVolume) {
+        Write-Log "OS volume not found" -Tag "Error"
+        Complete-Script -exitCode 1
+    }
+
+    Write-Log "VolumeStatus: $($osVolume.VolumeStatus) | ProtectionStatus: $($osVolume.ProtectionStatus) | KeyProtectorCount: $($osVolume.KeyProtector.Count)" -Tag "Debug"
+
+    # Step 1: Disable BitLocker (starts decryption if encrypted)
+    if ($osVolume.VolumeStatus -ne 'FullyDecrypted') {
+        Write-Log "Disabling BitLocker and starting decryption..." -Tag "Run"
+        Disable-BitLocker -MountPoint $osVolume.MountPoint -ErrorAction Stop
+        Write-Log "BitLocker disabled - decryption started" -Tag "Success"
+
+        # Wait for decryption to complete
+        Write-Log "Waiting for decryption to complete..." -Tag "Info"
+        do {
+            Start-Sleep -Seconds 5
+            $osVolume = Get-BitLockerVolume -MountPoint $osVolume.MountPoint
+            Write-Log "Decryption progress: $($osVolume.EncryptionPercentage)% | Status: $($osVolume.VolumeStatus)" -Tag "Debug"
+        } while ($osVolume.VolumeStatus -eq 'DecryptionInProgress')
+
+        Write-Log "Decryption complete" -Tag "Success"
+    }
+    else {
+        Write-Log "Volume already FullyDecrypted - skipping decryption" -Tag "Info"
+    }
+
+    # Step 2: Remove all key protectors
+    $osVolume = Get-BitLockerVolume -MountPoint $osVolume.MountPoint
+    if ($osVolume.KeyProtector.Count -gt 0) {
+        Write-Log "Removing $($osVolume.KeyProtector.Count) key protector(s)..." -Tag "Run"
+        foreach ($protector in $osVolume.KeyProtector) {
+            Write-Log "Removing protector: Type=$($protector.KeyProtectorType) | Id=$($protector.KeyProtectorId)" -Tag "Debug"
+            Remove-BitLockerKeyProtector -MountPoint $osVolume.MountPoint -KeyProtectorId $protector.KeyProtectorId -ErrorAction Stop
+            Write-Log "Removed $($protector.KeyProtectorType) protector" -Tag "Success"
         }
     }
     else {
-        Write-Log "Get-BitLockerVolume returned no OS volume" -Tag "Debug"
+        Write-Log "No key protectors to remove" -Tag "Info"
     }
 
-    if (-not $osVolume) {
-        Write-Log "No OS volume found - remediation needed" -Tag "Error"
-        Complete-Script -exitCode 1
-    }
+    # Final state
+    $osVolume = Get-BitLockerVolume -MountPoint $osVolume.MountPoint
+    Write-Log "Final state: VolumeStatus=$($osVolume.VolumeStatus) | KeyProtectorCount=$($osVolume.KeyProtector.Count)" -Tag "Info"
+    Write-Log "BitLocker removed successfully - device is clean for fresh run" -Tag "Success"
 
-    if ($osVolume.VolumeStatus -eq 'FullyDecrypted') {
-        Write-Log "BitLocker not active (FullyDecrypted) - remediation needed" -Tag "Info"
-        Write-Log "Exit reason: VolumeStatus=FullyDecrypted" -Tag "Debug"
-        Complete-Script -exitCode 1
-    }
-
-    if ($osVolume.VolumeStatus -eq 'EncryptionInProgress') {
-        Write-Log "Encryption in progress - skip remediation" -Tag "Info"
-        Write-Log "Exit reason: VolumeStatus=EncryptionInProgress" -Tag "Debug"
-        Complete-Script -exitCode 0
-    }
-
-    $hasTpmPin = $osVolume.KeyProtector | Where-Object { $_.KeyProtectorType -eq 'TpmPin' }
-    Write-Log "hasTpmPin=$($null -ne $hasTpmPin)" -Tag "Debug"
-
-    if (-not $hasTpmPin) {
-        Write-Log "Encrypted but no TPM+PIN protector - remediation needed" -Tag "Info"
-        Write-Log "Exit reason: no TpmPin protector" -Tag "Debug"
-        Complete-Script -exitCode 1
-    }
-
-    Write-Log "BitLocker with PIN compliant" -Tag "Success"
-    Write-Log "Exit reason: compliant (TpmPin present)" -Tag "Debug"
     Complete-Script -exitCode 0
 }
 catch {
-    Write-Log "Detection error: $_" -Tag "Error"
-    Write-Log "Detection exception: $($_.Exception.GetType().FullName) | Message: $($_.Exception.Message) | StackTrace: $($_.ScriptStackTrace)" -Tag "Debug"
+    Write-Log "Remove failed: $_" -Tag "Error"
+    Write-Log "Exception: $($_.Exception.GetType().FullName) | Message: $($_.Exception.Message)" -Tag "Debug"
     Complete-Script -exitCode 1
 }
