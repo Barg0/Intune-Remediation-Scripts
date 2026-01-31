@@ -1,14 +1,14 @@
-# BitLocker Stale Key Cleanup - Intune Remediation
+# 🔐 BitLocker Stale Key Cleanup - Intune Remediation
 
-Removes **orphaned OS volume** BitLocker recovery keys from Microsoft Entra ID via Intune Remediation.
+Removes **orphaned OS volume** BitLocker recovery keys from Microsoft Entra ID via Intune Remediation. Only stale keys for the **operating system drive** are deleted; data drive keys are never touched. Current/active keys are always preserved.
 
-## Contents
+## 📁 Contents
 
 - `detection.ps1` – Detection script (runs first; exits 1 when orphaned OS keys exist)
 - `remediation.ps1` – Remediation script (removes orphaned OS keys when triggered)
-- `README.md` – This file Only stale keys for the **operating system drive** are deleted; data drive keys are never touched. Current/active keys are always preserved.
+- `README.md` – This file
 
-## Background
+## 📖 Background
 
 Microsoft Entra ID supports a **maximum of 200 BitLocker recovery keys per device**. When this limit is reached:
 - New recovery keys cannot be escrowed
@@ -17,7 +17,7 @@ Microsoft Entra ID supports a **maximum of 200 BitLocker recovery keys per devic
 
 This solution proactively cleans up **orphaned OS volume keys** (from previous key rotations) before hitting the limit. Data drive keys (fixed/removable) are intentionally left in Entra.
 
-## Scope: OS Volume Keys Only
+## 🎯 Scope: OS Volume Keys Only
 
 | Action | OS Volume Keys | Data Drive Keys (Fixed/Removable) |
 |--------|----------------|-----------------------------------|
@@ -28,7 +28,7 @@ This solution proactively cleans up **orphaned OS volume keys** (from previous k
 - **Drive type** is determined by the API response (`volumeType`: 1=OS, 2=FixedData, 3=Removable)
 - Keys without `volumeType` in the API response are skipped (not deleted)
 
-## How It Works
+## ⚙️ How It Works
 
 Based on the [Patch My PC research](https://patchmypc.com/blog/bitlocker-recovery-key-cleanup/):
 
@@ -40,7 +40,7 @@ Based on the [Patch My PC research](https://patchmypc.com/blog/bitlocker-recover
 6. **Case-insensitive KID comparison**: The device returns Key IDs in uppercase, the API in lowercase; comparison uses case-insensitive logic so the same key is correctly recognized
 7. **No early exit**: If the device has no BitLocker volumes or no recovery protectors, the script still calls the API. Any orphaned OS keys in Entra are deleted (e.g. after decryption or reinstall)
 
-### Execution Flow
+### 🔄 Execution Flow
 
 1. Resolve MS-Organization-Access certificate and device ID
 2. Collect current recovery protector KIDs from **all** BitLocker-protected volumes (OS + data drives)
@@ -48,7 +48,7 @@ Based on the [Patch My PC research](https://patchmypc.com/blog/bitlocker-recover
 4. Identify orphaned keys where `volumeType` = 1 (OS)
 5. Delete orphaned OS keys in batches of 16
 
-## API Details (from Patch My PC)
+## 🔌 API Details (from Patch My PC)
 
 The scripts use the Enterprise Registration API:
 
@@ -59,7 +59,7 @@ The scripts use the Enterprise Registration API:
 - **Response**: `{ keys: [ { kid: "...", volumeType: 1 }, ... ] }` – `volumeType` (1=OS, 2=FixedData, 3=Removable) determines which orphaned keys are deleted
 - **DELETE**: Same URL, body `{"kids": [...]}`, max 16 keys per request
 
-## Requirements
+## ✅ Requirements
 
 - **Entra ID joined** (or Hybrid Entra joined) device
 - **MS-Organization-Access** certificate in `LocalMachine\My` (auto-provisioned during join)
@@ -68,9 +68,9 @@ The scripts use the Enterprise Registration API:
 
 BitLocker does not need to be currently enabled; the script will still remove orphaned OS keys left from previously encrypted drives.
 
-## Intune Setup
+## 🚀 Intune Setup
 
-### 1. Create the Remediation
+### 1️⃣ Create the Remediation
 
 1. Go to **Microsoft Intune** → **Devices** → **Remediations**
 2. Click **Create script package**
@@ -84,12 +84,12 @@ BitLocker does not need to be currently enabled; the script will still remove or
    - **Enforce script signature check**: **No** (unless you sign the scripts)
 5. Assign to your device groups (e.g., all Windows devices with BitLocker)
 
-### 2. Schedule
+### 2️⃣ Schedule
 
 - Configure a schedule (e.g., daily or weekly)
 - Remediation runs only when detection returns non-compliant (exit 1)
 
-## Script Behavior
+## 📋 Script Behavior
 
 | Script        | Exit 0                      | Exit 1                      |
 |---------------|-----------------------------|-----------------------------|
@@ -106,13 +106,13 @@ BitLocker does not need to be currently enabled; the script will still remove or
 
 **Remediation** removes only orphaned OS volume keys in batches of 16. Data drive keys are never modified.
 
-## Logging
+## 📝 Logging
 
 Logs are written to:
 - `%ProgramData%\IntuneLogs\Scripts\BitLocker-StaleKeyCleanup\detection.log`
 - `%ProgramData%\IntuneLogs\Scripts\BitLocker-StaleKeyCleanup\remediation.log`
 
-### Troubleshooting / Debug Logging
+### 🔍 Troubleshooting / Debug Logging
 
 Set `$logDebug = $true` at the top of each script for verbose `[Debug]` logs:
 - MDM enrollment status and enrollment UPN
@@ -124,11 +124,11 @@ Set `$logDebug = $true` at the top of each script for verbose `[Debug]` logs:
 - Orphaned non-OS keys skipped (with reason)
 - Batch delete operations
 
-## Viability
+## 🟢 Viability
 
 **Client remediation is viable.** The scripts use the device-side Enterprise Registration API (`manage/common/bitlocker/{deviceId}`) with the MS-Organization-Access certificate and BitLocker-specific headers, as documented in the [Patch My PC article](https://patchmypc.com/blog/bitlocker-recovery-key-cleanup/). **Graph cannot delete BitLocker keys** – there is no delete API.
 
-## Limitations & Notes
+## ⚠️ Limitations & Notes
 
 1. **OS volume keys only**: Orphaned data drive keys (FixedData, Removable) are intentionally left in Entra.
 
@@ -138,7 +138,11 @@ Set `$logDebug = $true` at the top of each script for verbose `[Debug]` logs:
 
 4. **National clouds**: For GCC/GCC High/China, the base host may differ (e.g., `enterpriseregistration.windows.us`). Update the URL in both scripts if needed.
 
-## References
+## 🙏 Thanks
+
+Many thanks to **[Patch My PC](https://patchmypc.com)** for their research and [blog post](https://patchmypc.com/blog/bitlocker-recovery-key-cleanup/) on BitLocker stale key cleanup. Their work documenting the undocumented Enterprise Registration API, the correct URL structure (`manage/common/bitlocker`), required headers, and MS-Organization-Access certificate authentication made this solution possible.
+
+## 📚 References
 
 - [BitLocker Stale Recovery Key Cleanup – Patch My PC](https://patchmypc.com/blog/bitlocker-recovery-key-cleanup/)
 - [Intune Remediations – Microsoft Docs](https://learn.microsoft.com/en-us/mem/intune/fundamentals/remediations)
