@@ -148,8 +148,8 @@ try {
         Write-Log "After RecoveryPassword: KeyProtectorCount=$($afterRecovery.KeyProtector.Count) | Types: $(($afterRecovery.KeyProtector | ForEach-Object { $_.KeyProtectorType }) -join ',')" -Tag "Debug"
 
         try {
-            Write-Log "Calling Enable-BitLocker -MountPoint $($osVolume.MountPoint) -TPMandPinProtector -UsedSpaceOnly -EncryptionMethod XtsAes256 -SkipHardwareTest | PIN length=$($pinValue.Length)" -Tag "Debug"
-            Enable-BitLocker -MountPoint $osVolume.MountPoint -Pin $securePin -TPMandPinProtector -UsedSpaceOnly -EncryptionMethod XtsAes256 -SkipHardwareTest -ErrorAction Stop
+            Write-Log "Calling Enable-BitLocker -MountPoint $($osVolume.MountPoint) -Pin (length $($pinValue.Length)) -TPMandPinProtector (policy supplies encryption method and options)" -Tag "Debug"
+            Enable-BitLocker -MountPoint $osVolume.MountPoint -Pin $securePin -TPMandPinProtector -ErrorAction Stop
             Write-Log "Enabled BitLocker with TPM+PIN" -Tag "Success"
         }
         catch {
