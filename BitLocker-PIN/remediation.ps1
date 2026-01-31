@@ -124,6 +124,23 @@ try {
     if ($osVolume.VolumeStatus -eq 'FullyDecrypted') {
         Write-Log "OS volume FullyDecrypted - enabling BitLocker with TPM+PIN" -Tag "Run"
 
+        if ($osVolume.KeyProtector.Count -gt 0) {
+            Write-Log "Removing $($osVolume.KeyProtector.Count) existing key protector(s) to start clean (e.g. from previous failed run)" -Tag "Run"
+            foreach ($protector in $osVolume.KeyProtector) {
+                Write-Log "Removing protector: Type=$($protector.KeyProtectorType) | Id=$($protector.KeyProtectorId)" -Tag "Debug"
+                try {
+                    Remove-BitLockerKeyProtector -MountPoint $osVolume.MountPoint -KeyProtectorId $protector.KeyProtectorId -ErrorAction Stop
+                    Write-Log "Removed $($protector.KeyProtectorType) protector" -Tag "Success"
+                }
+                catch {
+                    Write-Log "Failed to remove protector $($protector.KeyProtectorType): $_" -Tag "Error"
+                    throw
+                }
+            }
+            $osVolume = Get-BitLockerVolume -MountPoint $osVolume.MountPoint
+            Write-Log "After removal: KeyProtectorCount=$($osVolume.KeyProtector.Count)" -Tag "Debug"
+        }
+
         Write-Log "Calling Add-BitLockerKeyProtector -MountPoint $($osVolume.MountPoint) -RecoveryPasswordProtector" -Tag "Debug"
         Add-BitLockerKeyProtector -MountPoint $osVolume.MountPoint -RecoveryPasswordProtector -ErrorAction Stop
         Write-Log "Added RecoveryPassword protector" -Tag "Success"
@@ -147,10 +164,12 @@ try {
         }
 
         try {
-            $recoveryId = (Get-BitLockerVolume -MountPoint $osVolume.MountPoint).KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | Select-Object -ExpandProperty KeyProtectorId
-            Write-Log "BackupToAAD - RecoveryKeyProtectorId: $recoveryId" -Tag "Debug"
-            BackupToAAD-BitLockerKeyProtector -MountPoint $osVolume.MountPoint -KeyProtectorId $recoveryId -ErrorAction Stop
-            Write-Log "Recovery key backed up to AAD" -Tag "Success"
+            $recoveryId = (Get-BitLockerVolume -MountPoint $osVolume.MountPoint).KeyProtector | Where-Object { $_.KeyProtectorType -eq 'RecoveryPassword' } | Select-Object -ExpandProperty KeyProtectorId -First 1
+            if ($recoveryId) {
+                Write-Log "BackupToAAD - RecoveryKeyProtectorId: $recoveryId" -Tag "Debug"
+                BackupToAAD-BitLockerKeyProtector -MountPoint $osVolume.MountPoint -KeyProtectorId $recoveryId -ErrorAction Stop
+                Write-Log "Recovery key backed up to AAD" -Tag "Success"
+            }
         }
         catch {
             Write-Log "AAD backup failed (device may not be AAD joined): $_" -Tag "Info"
