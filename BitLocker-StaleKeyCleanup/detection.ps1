@@ -6,7 +6,8 @@ $scriptName  = "BitLocker-StaleKeyCleanup"
 $logFileName = "detection.log"
 
 # ---------------------------[ Config ]---------------------------
-# API uses manage/common/bitlocker/{deviceId} - no tenant config needed (per Patch My PC)
+# API uses manage/common/bitlocker/{deviceId}; tenant path tried on 401. National clouds: set $bitLockerApiBase
+$bitLockerApiBase = "https://enterpriseregistration.windows.net"
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
@@ -109,8 +110,8 @@ try {
     }
 
     if (-not $mdmEnrollment) {
-        Write-Log "Not Intune/Entra managed - skipping (compliant)" -Tag "Info"
-        Complete-Script -ExitCode 0
+        Write-Log "Not Intune/Entra managed - detection cannot run (non-compliant)" -Tag "Info"
+        Complete-Script -ExitCode 1
     }
 
     # ---------------------------[ Get MS-Organization-Access Certificate ]---------------------------
@@ -120,16 +121,35 @@ try {
 
     if (-not $deviceCert) {
         Write-Log "MS-Organization-Access certificate not found - device may not be properly Entra joined" -Tag "Error"
-        Write-Log "Skipping to avoid false remediation trigger (exit 0)" -Tag "Debug"
-        Complete-Script -ExitCode 0
+        Complete-Script -ExitCode 1
     }
 
     Write-Log "Certificate found - Thumbprint: $($deviceCert.Thumbprint) | Subject: $($deviceCert.Subject)" -Tag "Debug"
+
+    if (-not $deviceCert.HasPrivateKey) {
+        Write-Log "Certificate has no private key - API requires client TLS." -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
 
     # ---------------------------[ Get Device ID ]---------------------------
     Write-Log "Resolving device ID from certificate..." -Tag "Get"
     $deviceId = ($deviceCert.Subject -replace 'CN=', '').Trim()
     Write-Log "Device ID: $deviceId" -Tag "Debug"
+
+    # ---------------------------[ Optional: Tenant ID for API path ]---------------------------
+    $tenantId = $null
+    try {
+        $joinInfoPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo'
+        if (Test-Path -LiteralPath $joinInfoPath -ErrorAction SilentlyContinue) {
+            $joinKeys = Get-ChildItem -Path $joinInfoPath -ErrorAction SilentlyContinue
+            foreach ($key in $joinKeys) {
+                $tid = Get-ItemProperty -Path $key.PSPath -Name 'TenantId' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty TenantId
+                if ($tid) { $tenantId = $tid; break }
+            }
+        }
+    }
+    catch { }
+    if ($tenantId) { Write-Log "Tenant ID from registry: $tenantId" -Tag "Debug" }
 
     # ---------------------------[ Get Current Recovery Protectors from ALL Volumes ]---------------------------
     # If device has no BitLocker or no recovery protectors, currentKids stays empty = ALL keys in Entra are orphaned and should be deleted
@@ -155,29 +175,45 @@ try {
     Write-Log "Current KIDs to keep ($($currentKids.Count)): $(if ($currentKids.Count -gt 0) { $currentKids -join ', ' } else { '(none - delete all)' })" -Tag "Debug"
 
     # ---------------------------[ Call Enterprise Registration API ]---------------------------
-    # Per Patch My PC: manage/common/bitlocker/{deviceId} with BitLocker headers + MS-Organization-Access cert
+    # Per Patch My PC: manage/common/bitlocker/{deviceId}; some tenants need manage/{tenantId}/bitlocker
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    $clientRequestId = [Guid]::NewGuid().ToString()
-    $bitLockerGetUrl = "https://enterpriseregistration.windows.net/manage/common/bitlocker/$deviceId`?api-version=1.2&client-request-id=$clientRequestId"
+    $baseHost = $bitLockerApiBase
+    $pathCommon = "manage/common/bitlocker/$deviceId"
+    $pathTenant = if ($tenantId) { "manage/$tenantId/bitlocker/$deviceId" } else { $null }
 
     $headers = @{
-        "User-Agent"           = "BitLocker/10.0 (Windows)"
-        "Accept"               = "application/json"
-        "ocp-adrs-client-name" = "windows"
+        "User-Agent"             = "BitLocker/10.0 (Windows)"
+        "Accept"                 = "application/json"
+        "ocp-adrs-client-name"   = "windows"
         "ocp-adrs-client-version" = "10.0"
     }
 
-    Write-Log "Invoking GET: $bitLockerGetUrl" -Tag "Run"
     $response = $null
-    try {
-        $response = Invoke-RestMethod -Uri $bitLockerGetUrl -Method Get -Headers $headers -Certificate $deviceCert -UseBasicParsing -ErrorAction Stop
-        Write-Log "GET succeeded" -Tag "Debug"
+    foreach ($path in @($pathCommon, $pathTenant)) {
+        if (-not $path) { continue }
+        $clientRequestId = [Guid]::NewGuid().ToString()
+        $bitLockerGetUrl = "$baseHost/$path`?api-version=1.2&client-request-id=$clientRequestId"
+        Write-Log "Invoking GET: $bitLockerGetUrl" -Tag "Run"
+        try {
+            $response = Invoke-RestMethod -Uri $bitLockerGetUrl -Method Get -Headers $headers -Certificate $deviceCert -UseBasicParsing -ErrorAction Stop
+            Write-Log "GET succeeded" -Tag "Debug"
+            break
+        }
+        catch {
+            Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
+            if ($path -eq $pathCommon -and $pathTenant) {
+                Write-Log "Retrying with tenant-specific path" -Tag "Debug"
+            }
+            else {
+                Write-Log "GET failed - detection cannot complete (non-compliant)" -Tag "Debug"
+                Complete-Script -ExitCode 1
+            }
+        }
     }
-    catch {
-        Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
-        Write-Log "Exiting compliant to avoid repeated remediation failures" -Tag "Debug"
-        Complete-Script -ExitCode 0
+    if (-not $response) {
+        Write-Log "GET failed for all paths - detection cannot complete (non-compliant)" -Tag "Debug"
+        Complete-Script -ExitCode 1
     }
 
     # ---------------------------[ Parse API Response ]---------------------------
@@ -238,6 +274,5 @@ try {
 catch {
     Write-Log "Detection error: $($_.Exception.Message)" -Tag "Error"
     Write-Log "Stack trace: $($_.ScriptStackTrace)" -Tag "Debug"
-    Write-Log "Defaulting to compliant to avoid remediation loops" -Tag "Debug"
-    Complete-Script -ExitCode 0
+    Complete-Script -ExitCode 1
 }

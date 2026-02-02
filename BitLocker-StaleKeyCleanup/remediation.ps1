@@ -6,7 +6,9 @@ $scriptName  = "BitLocker-StaleKeyCleanup"
 $logFileName = "remediation.log"
 
 # ---------------------------[ Config ]---------------------------
-# API uses manage/common/bitlocker/{deviceId} - no tenant config needed (per Patch My PC)
+# API uses manage/common/bitlocker/{deviceId}; tenant path manage/{tenantId}/bitlocker tried on 401
+# National/sovereign clouds: set $bitLockerApiBase (e.g. https://enterpriseregistration.windows.us for US Gov)
+$bitLockerApiBase = "https://enterpriseregistration.windows.net"
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
@@ -111,10 +113,31 @@ try {
 
     Write-Log "Certificate found - Thumbprint: $($deviceCert.Thumbprint) | Subject: $($deviceCert.Subject)" -Tag "Debug"
 
+    if (-not $deviceCert.HasPrivateKey) {
+        Write-Log "Certificate has no private key - API requires client TLS. Check cert store and key permissions (SYSTEM must have access)." -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
+
     # ---------------------------[ Get Device ID ]---------------------------
     Write-Log "Resolving device ID from certificate..." -Tag "Get"
     $deviceId = ($deviceCert.Subject -replace 'CN=', '').Trim()
     Write-Log "Device ID: $deviceId" -Tag "Debug"
+
+    # ---------------------------[ Optional: Tenant ID for API path ]---------------------------
+    # Some tenants return 401 with manage/common/bitlocker; tenant path manage/{tenantId}/bitlocker may be required
+    $tenantId = $null
+    try {
+        $joinInfoPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CloudDomainJoin\JoinInfo'
+        if (Test-Path -LiteralPath $joinInfoPath -ErrorAction SilentlyContinue) {
+            $joinKeys = Get-ChildItem -Path $joinInfoPath -ErrorAction SilentlyContinue
+            foreach ($key in $joinKeys) {
+                $tid = Get-ItemProperty -Path $key.PSPath -Name 'TenantId' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty TenantId
+                if ($tid) { $tenantId = $tid; break }
+            }
+        }
+    }
+    catch { }
+    if ($tenantId) { Write-Log "Tenant ID from registry: $tenantId" -Tag "Debug" }
 
     # ---------------------------[ Get Current Recovery Protectors from ALL Volumes ]---------------------------
     # If device has no BitLocker or no recovery protectors, currentKids stays empty = ALL keys in Entra are orphaned and should be deleted
@@ -141,10 +164,12 @@ try {
 
     # ---------------------------[ Retrieve Recovery Keys from Entra ]---------------------------
     # Per Patch My PC: manage/common/bitlocker/{deviceId} with BitLocker headers + MS-Organization-Access cert
+    # Some tenants return 401 with "common"; try manage/{tenantId}/bitlocker as fallback
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-    $clientRequestId = [Guid]::NewGuid().ToString()
-    $bitLockerGetUrl = "https://enterpriseregistration.windows.net/manage/common/bitlocker/$deviceId`?api-version=1.2&client-request-id=$clientRequestId"
+    $baseHost = $bitLockerApiBase
+    $pathCommon = "manage/common/bitlocker/$deviceId"
+    $pathTenant = if ($tenantId) { "manage/$tenantId/bitlocker/$deviceId" } else { $null }
 
     $headers = @{
         "User-Agent"             = "BitLocker/10.0 (Windows)"
@@ -153,18 +178,37 @@ try {
         "ocp-adrs-client-version" = "10.0"
     }
 
-    Write-Log "Invoking GET: $bitLockerGetUrl" -Tag "Run"
     $response = $null
-    try {
-        $response = Invoke-RestMethod -Uri $bitLockerGetUrl -Method Get -Headers $headers -Certificate $deviceCert -UseBasicParsing -ErrorAction Stop
-        Write-Log "GET succeeded" -Tag "Debug"
-    }
-    catch {
-        Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
-        Complete-Script -ExitCode 1
+    $bitLockerBaseUrl = $null
+
+    foreach ($path in @($pathCommon, $pathTenant)) {
+        if (-not $path) { continue }
+        $clientRequestId = [Guid]::NewGuid().ToString()
+        $bitLockerGetUrl = "$baseHost/$path`?api-version=1.2&client-request-id=$clientRequestId"
+        Write-Log "Invoking GET: $bitLockerGetUrl" -Tag "Run"
+        try {
+            $response = Invoke-RestMethod -Uri $bitLockerGetUrl -Method Get -Headers $headers -Certificate $deviceCert -UseBasicParsing -ErrorAction Stop
+            $bitLockerBaseUrl = "$baseHost/$path"
+            Write-Log "GET succeeded" -Tag "Debug"
+            break
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) { try { $statusCode = [int]$_.Exception.Response.StatusCode } catch { } }
+            Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
+            if ($statusCode -eq 401 -and $path -eq $pathCommon -and $pathTenant) {
+                Write-Log "Retrying with tenant-specific path: manage/$tenantId/bitlocker" -Tag "Debug"
+            }
+            else {
+                Complete-Script -ExitCode 1
+            }
+        }
     }
 
-    $bitLockerBaseUrl = "https://enterpriseregistration.windows.net/manage/common/bitlocker/$deviceId"
+    if (-not $response -or -not $bitLockerBaseUrl) {
+        Write-Log "GET failed for all attempted paths (common and tenant). 401 may be due to: cert private key not accessible to SYSTEM, wrong national cloud endpoint, or tenant policy." -Tag "Error"
+        Complete-Script -ExitCode 1
+    }
 
     # ---------------------------[ Parse API Response and Identify Stale Keys ]---------------------------
     # Response format: { keys: [ { kid: "..." }, ... ] }
