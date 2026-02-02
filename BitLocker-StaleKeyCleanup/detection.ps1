@@ -8,6 +8,11 @@ $logFileName = "detection.log"
 # ---------------------------[ Config ]---------------------------
 # API uses manage/common/bitlocker/{deviceId}; tenant path tried on 401. National clouds: set $bitLockerApiBase
 $bitLockerApiBase = "https://enterpriseregistration.windows.net"
+$bitLockerApiMaxRetries     = 3   # Retries per path (API can be intermittent)
+$bitLockerApiRetryWaitSecs  = 10  # Wait between retries (seconds)
+
+# Load System.Net.Http for HttpClientHandler (required on some Windows PowerShell / .NET Framework builds)
+try { Add-Type -AssemblyName System.Net.Http -ErrorAction Stop } catch { }
 
 # ---------------------------[ Logging Setup ]---------------------------
 $log           = $true
@@ -90,6 +95,46 @@ function Complete-Script {
     Write-Log "======== Script Completed ========" -Tag "End"
 
     exit $ExitCode
+}
+
+# ---------------------------[ BitLocker API via HttpClient (explicit client cert) ]---------------------------
+# Invoke-RestMethod -Certificate can fail to send client cert on some builds; HttpClient + ClientCertificates works
+function Invoke-BitLockerApi {
+    [CmdletBinding()]
+    param (
+        [string]$Uri,
+        [ValidateSet('Get', 'Delete')]
+        [string]$Method = 'Get',
+        [System.Security.Cryptography.X509Certificates.X509Certificate2]$Certificate,
+        [hashtable]$Headers,
+        [string]$Body = $null
+    )
+    $handler = $null
+    $client  = $null
+    try {
+        $handler = New-Object System.Net.Http.HttpClientHandler
+        [void]$handler.ClientCertificates.Add($Certificate)
+        $client = New-Object System.Net.Http.HttpClient($handler)
+        foreach ($key in $Headers.Keys) {
+            [void]$client.DefaultRequestHeaders.TryAddWithoutValidation($key, $Headers[$key])
+        }
+        if ($Method -eq 'Get') {
+            $response = $client.GetAsync($Uri).GetAwaiter().GetResult()
+        }
+        else {
+            $request = New-Object System.Net.Http.HttpRequestMessage([System.Net.Http.HttpMethod]::Delete, $Uri)
+            if ($Body) {
+                $request.Content = New-Object System.Net.Http.StringContent($Body, [System.Text.Encoding]::UTF8, 'application/json')
+            }
+            $response = $client.SendAsync($request).GetAwaiter().GetResult()
+        }
+        $response.EnsureSuccessStatusCode() | Out-Null
+        $response.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+    }
+    finally {
+        if ($client)  { $client.Dispose() }
+        if ($handler) { $handler.Dispose() }
+    }
 }
 
 # ---------------------------[ Script Start ]---------------------------
@@ -192,23 +237,33 @@ try {
     $response = $null
     foreach ($path in @($pathCommon, $pathTenant)) {
         if (-not $path) { continue }
-        $clientRequestId = [Guid]::NewGuid().ToString()
-        $bitLockerGetUrl = "$baseHost/$path`?api-version=1.2&client-request-id=$clientRequestId"
-        Write-Log "Invoking GET: $bitLockerGetUrl" -Tag "Run"
-        try {
-            $response = Invoke-RestMethod -Uri $bitLockerGetUrl -Method Get -Headers $headers -Certificate $deviceCert -UseBasicParsing -ErrorAction Stop
-            Write-Log "GET succeeded" -Tag "Debug"
-            break
+        $pathSucceeded = $false
+        for ($attempt = 1; $attempt -le $bitLockerApiMaxRetries; $attempt++) {
+            $clientRequestId = [Guid]::NewGuid().ToString()
+            $bitLockerGetUrl = "$baseHost/$path`?api-version=1.2&client-request-id=$clientRequestId"
+            Write-Log "Invoking GET (attempt $attempt/$bitLockerApiMaxRetries): $bitLockerGetUrl" -Tag "Run"
+            try {
+                $responseJson = Invoke-BitLockerApi -Uri $bitLockerGetUrl -Method Get -Certificate $deviceCert -Headers $headers
+                $response = $responseJson | ConvertFrom-Json
+                Write-Log "GET succeeded" -Tag "Debug"
+                $pathSucceeded = $true
+                break
+            }
+            catch {
+                Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
+                if ($attempt -lt $bitLockerApiMaxRetries) {
+                    Write-Log "Waiting $bitLockerApiRetryWaitSecs seconds before retry..." -Tag "Debug"
+                    Start-Sleep -Seconds $bitLockerApiRetryWaitSecs
+                }
+            }
         }
-        catch {
-            Write-Log "GET failed: $($_.Exception.Message)" -Tag "Error"
-            if ($path -eq $pathCommon -and $pathTenant) {
-                Write-Log "Retrying with tenant-specific path" -Tag "Debug"
-            }
-            else {
-                Write-Log "GET failed - detection cannot complete (non-compliant)" -Tag "Debug"
-                Complete-Script -ExitCode 1
-            }
+        if ($pathSucceeded) { break }
+        if ($path -eq $pathCommon -and $pathTenant) {
+            Write-Log "All $bitLockerApiMaxRetries attempt(s) failed for common path - trying tenant path" -Tag "Debug"
+        }
+        else {
+            Write-Log "GET failed after $bitLockerApiMaxRetries attempt(s) - detection cannot complete (non-compliant)" -Tag "Debug"
+            Complete-Script -ExitCode 1
         }
     }
     if (-not $response) {
