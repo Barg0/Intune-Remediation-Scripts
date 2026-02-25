@@ -21,7 +21,7 @@ $logGet        = $true    # enable/disable all [Get] logs
 $logRun        = $true    # enable/disable all [Run] logs
 $enableLogFile = $true
 
-$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$scriptName"
+$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$($env:USERNAME)\$scriptName"
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
