@@ -17,7 +17,7 @@ $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
 
-$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$($env:USERNAME)\$scriptName"
+$LogFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$env:USERNAME\$scriptName"
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
@@ -146,4 +146,5 @@ else {
     Write-Log "$($missingPrinters.Count) printer(s) are still missing." -Tag "Error"
     Complete-Script -ExitCode 1
 }
+
 
