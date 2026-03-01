@@ -20,6 +20,10 @@ $enableLogFile = $true
 $logFileDirectory = "$PSScriptRoot\log"
 $logFile          = Join-Path $logFileDirectory $logFileName
 
+if (-not (Test-Path $logFileDirectory)) {
+    New-Item -ItemType Directory -Path $logFileDirectory -Force | Out-Null
+}
+
 # ---------------------------[ Logging Function ]---------------------------
 function Write-Log {
     [CmdletBinding()]
@@ -218,4 +222,5 @@ else {
     Write-Log "All printer scripts generated successfully." -Tag "Success"
     Complete-Script -ExitCode 0
 }
+
 
