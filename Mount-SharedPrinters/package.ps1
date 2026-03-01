@@ -17,7 +17,7 @@ $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
 
-$logFileDirectory = Join-Path $PSScriptRoot 'logs'
+$logFileDirectory = "$PSScriptRoot\log"
 $logFile          = Join-Path $logFileDirectory $logFileName
 
 # ---------------------------[ Logging Function ]---------------------------
@@ -218,3 +218,4 @@ else {
     Write-Log "All printer scripts generated successfully." -Tag "Success"
     Complete-Script -ExitCode 0
 }
+
