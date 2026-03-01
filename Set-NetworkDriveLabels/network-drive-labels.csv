@@ -1,2 +1,2 @@
-DriveLetter,DrivePath,Label
-M,\\files.domain.local\Marketing$,Marketing
+DriveLetter,DrivePath,Label,EntraGroup
+M,\\files.domain.local\Marketing$,Marketing,GRP-Marketing-Devices
