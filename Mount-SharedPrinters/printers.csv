@@ -1,2 +1,2 @@
-ScriptName,PrintServer,Printers
-PRT01,print.domain.local,prt01;prt02
+ScriptName,PrintServer,Printers,EntraGroup
+PRT01,print.domain.local,prt01;prt02,SG-Intune-Printer-PRT01

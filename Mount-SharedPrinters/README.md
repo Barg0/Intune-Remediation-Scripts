@@ -1,78 +1,142 @@
 # 🖨️ Mount Shared Printers
 
-Mass-generate Intune Remediation scripts for shared network printers from a single CSV file.
+Mass-generate and deploy Intune Remediation scripts for shared network printers from a single CSV file. 🚀
 
 ## 📁 Project Structure
 
 ```
 Mount-SharedPrinters/
-├── template/
-│   ├── detection.ps1        # Detection template with placeholders
-│   ├── remediation.ps1      # Remediation template with placeholders
-│   └── README.md            # Manual setup & Intune deployment guide
-├── printers/                # Generated output (created by package.ps1)
-│   └── <ScriptName>/
-│       ├── detection.ps1
-│       └── remediation.ps1
-├── package.ps1              # Generates scripts from CSV + templates
-├── printers.csv             # Printer definitions
-└── README.md
+├── 📂 template/
+│   ├── 🔍 detection.ps1        # Detection template with placeholders
+│   ├── 🔧 remediation.ps1      # Remediation template with placeholders
+│   └── 📖 README.md            # Manual setup & Intune deployment guide
+├── 📂 printers/                # Generated output (created by package.ps1)
+│   └── 📂 <ScriptName>/
+│       ├── 🔍 detection.ps1
+│       └── 🔧 remediation.ps1
+├── 📦 package.ps1              # Generates scripts from CSV + templates
+├── 🚀 deploy.ps1               # Deploys generated scripts to Intune via Graph API
+├── 📋 printers.csv             # Printer definitions
+└── 📖 README.md
 ```
 
 ## 🚀 Usage
 
-### 1. Edit the CSV
+### ✏️ 1. Edit the CSV
 
 Open `printers.csv` and add one row per printer group. Separate multiple printer names with `;`.
 
 ```csv
-ScriptName,PrintServer,Printers
-PRT01,print.domain.local,prt01;prt02
-PRT02,print.domain.local,prt03
-Office-3F,printserver.contoso.com,HP-LaserJet-4050;Canon-ImageRunner
+ScriptName,PrintServer,Printers,EntraGroup
+PRT01,print.domain.local,prt01;prt02,SG-Intune-Printer-PRT01
+PRT02,print.domain.local,prt03,SG-Intune-Printer-PRT02
+Office-3F,printserver.contoso.com,HP-LaserJet-4050;Canon-ImageRunner,SG-Intune-Printer-Office3F
 ```
 
 | Column        | Description                                                  |
 |---------------|--------------------------------------------------------------|
-| `ScriptName`  | Unique identifier for this group -- becomes the output folder name and part of `$scriptName` (`Printer - <ScriptName>`) in the generated scripts |
-| `PrintServer` | FQDN of the print server                                    |
-| `Printers`    | Semicolon-separated list of shared printer names             |
+| `ScriptName`  | 🏷️ Unique identifier — becomes the output folder name and part of `$scriptName` (`Printer - <ScriptName>`) in the generated scripts |
+| `PrintServer` | 🖥️ FQDN of the print server                                 |
+| `Printers`    | 🖨️ Semicolon-separated list of shared printer names          |
+| `EntraGroup`  | 👥 Entra ID security group the Intune remediation will be assigned to |
 
-### 2. Run the Package Script
+### 📦 2. Run the Package Script
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\package.ps1
 ```
 
-The script reads `printers.csv`, replaces the `__SCRIPTNAME__` and `__PRINTERS__` placeholders in the templates, and writes ready-to-upload scripts to `printers/<ScriptName>/`.
+The script reads `printers.csv`, replaces the `__SCRIPTNAME__` and `__PRINTERS__` placeholders in the templates, and writes ready-to-upload scripts to `printers/<ScriptName>/`. ✨
 
 For the example CSV above, this generates:
 
 ```
 printers/
-├── PRT01/
-│   ├── detection.ps1         # \\print.domain.local\prt01, \prt02
-│   └── remediation.ps1
-├── PRT02/
-│   ├── detection.ps1         # \\print.domain.local\prt03
-│   └── remediation.ps1
-└── Office-3F/
-    ├── detection.ps1         # \\printserver.contoso.com\HP-LaserJet-4050, \Canon-ImageRunner
-    └── remediation.ps1
+├── 📂 PRT01/
+│   ├── 🔍 detection.ps1         # \\print.domain.local\prt01, \prt02
+│   └── 🔧 remediation.ps1
+├── 📂 PRT02/
+│   ├── 🔍 detection.ps1         # \\print.domain.local\prt03
+│   └── 🔧 remediation.ps1
+└── 📂 Office-3F/
+    ├── 🔍 detection.ps1         # \\printserver.contoso.com\HP-LaserJet-4050, \Canon-ImageRunner
+    └── 🔧 remediation.ps1
 ```
 
-### 3. Upload to Intune
+### ☁️ 3. Deploy to Intune
 
-Upload each generated `detection.ps1` + `remediation.ps1` pair as an Intune Remediation. See the [template README](template/README.md) for detailed Intune deployment steps.
+You can deploy either **automatically** with `deploy.ps1` or **manually** through the Intune portal.
 
-## 📋 Package Script Logging
+#### 🤖 Option A: Automated Deployment
 
-`package.ps1` logs to `logs/package.log` and to the console.
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy.ps1
+```
+
+`deploy.ps1` connects to Microsoft Graph, and for each row in the CSV it will:
+
+1. 📄 Read the packaged detection and remediation scripts from `printers/<ScriptName>/`.
+2. ✅ Create or update an Intune Remediation named `🖨️ Printer - <ScriptName>`.
+3. 👥 Resolve the `EntraGroup` by display name and assign the remediation to that group.
+
+Before running, review the configuration at the top of `deploy.ps1`:
+
+| Setting              | Default       | Description                              |
+|----------------------|---------------|------------------------------------------|
+| `$intuneNamePrefix`  | `🖨️ Printer` | 🏷️ Display name prefix in Intune         |
+| `$intunePublisher`   | `Barg0`       | ✍️ Publisher shown in Intune              |
+| `$scheduleType`      | `Hourly`      | ⏰ `Hourly` or `Daily`                   |
+| `$scheduleInterval`  | `1`           | 🔁 Run every X hours/days                |
+| `$deviceFilterId`    | *(set)*       | 🔎 Device filter ID (leave empty to skip)|
+| `$deviceFilterType`  | `include`     | 🎯 `include` or `exclude`                |
+
+The script requires the `Microsoft.Graph.Authentication` PowerShell module:
+
+```powershell
+Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
+```
+
+#### 🖱️ Option B: Manual Upload
+
+Upload each generated `detection.ps1` + `remediation.ps1` pair as an Intune Remediation through the portal. See the [template README](template/README.md) for step-by-step instructions. 📖
+
+### 🔎 Finding the Device Filter ID
+
+If you want to scope the assignment to a device filter, you need its GUID. There are three ways to find it:
+
+**🖱️ Via the Intune Portal:**
+
+1. Go to **Devices > Filters** (under Organize devices).
+2. Click the filter you want to use.
+3. The GUID is shown in the **Filter ID** field on the overview page, or in the browser URL:
 
 ```
-2026-02-27 12:00:00 [  Start   ] ======== Deploy Script Started ========
+https://intune.microsoft.com/.../assignmentFilter/<GUID>/...
+```
+
+**💻 Via PowerShell** (after connecting to Graph):
+
+```powershell
+Connect-MgGraph -Scopes "DeviceManagementConfiguration.Read.All"
+Invoke-MgGraphRequest -Uri "https://graph.microsoft.com/beta/deviceManagement/assignmentFilters" -Method GET |
+    Select-Object -ExpandProperty value |
+    Format-Table displayName, id, platform
+```
+
+**🌐 Via Graph Explorer:**
+
+```
+GET https://graph.microsoft.com/beta/deviceManagement/assignmentFilters
+```
+
+## 📋 Logging
+
+Both `package.ps1` and `deploy.ps1` log to the console and to `log/` (`package.log` and `deploy.log` respectively). 📝
+
+```
+2026-02-27 12:00:00 [  Start   ] ======== Script Started ========
 2026-02-27 12:00:00 [  Get     ] Reading printer definitions from: .\printers.csv
-2026-02-27 12:00:00 [  Info    ] Found 3 printer definition(s)
+2026-02-27 12:00:00 [  Info    ] Found 3 printer group(s)
 2026-02-27 12:00:00 [  Run     ] Processing 'PRT01' (Server: print.domain.local)
 2026-02-27 12:00:00 [  Success ] Created detection script:  .\printers\PRT01\detection.ps1
 2026-02-27 12:00:00 [  Success ] Created remediation script: .\printers\PRT01\remediation.ps1
@@ -80,10 +144,11 @@ Upload each generated `detection.ps1` + `remediation.ps1` pair as an Intune Reme
 2026-02-27 12:00:00 [  End     ] ======== Script Completed ========
 ```
 
-Set `$logDebug = $true` in `package.ps1` to see the full generated printer arrays and raw CSV values for troubleshooting.
+Set `$logDebug = $true` in `package.ps1` to see the full generated printer arrays and raw CSV values for troubleshooting. 🐛
 
 ## 📌 Requirements
 
 - 💻 Windows 10 / 11
 - 🌐 Network access to the print server (for the generated scripts)
 - ☁️ Microsoft Intune (for deployment)
+- 📦 `Microsoft.Graph.Authentication` PowerShell module (for `deploy.ps1`)
