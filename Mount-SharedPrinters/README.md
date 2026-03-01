@@ -69,32 +69,68 @@ You can deploy either **automatically** with `deploy.ps1` or **manually** throug
 
 #### 🤖 Option A: Automated Deployment
 
+> ⚠️ **Prerequisite:** Run `package.ps1` first to generate the scripts in `printers/`.
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy.ps1
 ```
 
-`deploy.ps1` connects to Microsoft Graph, and for each row in the CSV it will:
+`deploy.ps1` connects to Microsoft Graph via interactive login and processes each row in `printers.csv`. The script is **idempotent** — running it again will update existing remediations rather than creating duplicates. ♻️
 
-1. 📄 Read the packaged detection and remediation scripts from `printers/<ScriptName>/`.
-2. ✅ Create or update an Intune Remediation named `🖨️ Printer - <ScriptName>`.
-3. 👥 Resolve the `EntraGroup` by display name and assign the remediation to that group.
+**🔄 For each CSV entry, the script will:**
 
-Before running, review the configuration at the top of `deploy.ps1`:
+1. 📄 Read the packaged `detection.ps1` and `remediation.ps1` from `printers/<ScriptName>/`.
+2. 🔐 Base64-encode both scripts for the Graph API payload.
+3. 🔍 Search Intune for an existing remediation named `🖨️ Printer - <ScriptName>`.
+4. ✅ **Create** the remediation if it doesn't exist, or **update** it if it does.
+5. 👥 Resolve the `EntraGroup` by display name to its Entra ID object ID.
+6. 🎯 Assign the remediation to that group (with optional device filter).
+7. ⏰ Apply the configured run schedule to the assignment.
 
-| Setting              | Default       | Description                              |
-|----------------------|---------------|------------------------------------------|
-| `$intuneNamePrefix`  | `🖨️ Printer` | 🏷️ Display name prefix in Intune         |
-| `$intunePublisher`   | `Barg0`       | ✍️ Publisher shown in Intune              |
-| `$scheduleType`      | `Hourly`      | ⏰ `Hourly` or `Daily`                   |
-| `$scheduleInterval`  | `1`           | 🔁 Run every X hours/days                |
-| `$deviceFilterId`    | *(set)*       | 🔎 Device filter ID (leave empty to skip)|
-| `$deviceFilterType`  | `include`     | 🎯 `include` or `exclude`                |
+**🔑 Required Graph Scopes** (prompted during interactive login):
 
-The script requires the `Microsoft.Graph.Authentication` PowerShell module:
+- `DeviceManagementScripts.ReadWrite.All`
+- `Group.Read.All`
+
+**📦 Required PowerShell Module:**
 
 ```powershell
 Install-Module Microsoft.Graph.Authentication -Scope CurrentUser
 ```
+
+**⚙️ Configuration**
+
+Before running, review and adjust the settings at the top of `deploy.ps1`:
+
+🏷️ **Intune Remediation Settings**
+
+| Setting              | Default       | Description                                                  |
+|----------------------|---------------|--------------------------------------------------------------|
+| `$intuneNamePrefix`  | `🖨️ Printer` | Display name prefix — each remediation is named `{prefix} - {ScriptName}` |
+| `$intunePublisher`   | `Barg0`       | Publisher / author shown in Intune                           |
+
+⏰ **Schedule Settings**
+
+| Setting              | Default   | Description                                                      |
+|----------------------|-----------|------------------------------------------------------------------|
+| `$scheduleType`      | `Hourly`  | Schedule type: `Hourly` or `Daily`                               |
+| `$scheduleInterval`  | `1`       | Interval: every X hours (1–23) or every X days (1–23)            |
+| `$scheduleDailyTime` | `08:00`   | Time of day to run (only used when `$scheduleType` is `Daily`)   |
+| `$scheduleUseUtc`    | `$false`  | Use UTC for the daily schedule time (only used with `Daily`)     |
+
+🎯 **Device Filter Settings**
+
+| Setting              | Default                                | Description                                      |
+|----------------------|----------------------------------------|--------------------------------------------------|
+| `$deviceFilterId`    | `19d6856c-7fc9-41fb-aa6b-aff4427d3113` | Device filter GUID — leave empty (`""`) to skip  |
+| `$deviceFilterType`  | `include`                              | Filter mode: `include` or `exclude`              |
+
+📝 **Logging Settings**
+
+| Setting           | Default | Description                              |
+|-------------------|---------|------------------------------------------|
+| `$log`            | `$true` | Enable or disable all logging            |
+| `$enableLogFile`  | `$true` | Write logs to `log/deploy.log` on disk   |
 
 #### 🖱️ Option B: Manual Upload
 
