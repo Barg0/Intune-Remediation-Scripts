@@ -66,11 +66,3 @@ Toggle **`$logDebug = $true`** inside either script when you want extra **Debug*
 | `web resource/grsremediation.txt` | Original blog-style remediation reference |
 
 ---
-
-## 📜 License
-
-If you publish this repo, add a license you are comfortable with. *(Not set in this README.)*
-
----
-
-*Built with ☕ and gratitude to the Intune community—especially **Call4cloud** for lighting the way.* ✨
