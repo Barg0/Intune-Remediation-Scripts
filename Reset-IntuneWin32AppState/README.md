@@ -62,7 +62,4 @@ Toggle **`$logDebug = $true`** inside either script when you want extra **Debug*
 |------|--------|
 | `detection.ps1` | Intune detection script |
 | `remediation.ps1` | Intune remediation script |
-| `web resource/grsdetection.txt` | Original blog-style detection reference |
-| `web resource/grsremediation.txt` | Original blog-style remediation reference |
-
 ---
