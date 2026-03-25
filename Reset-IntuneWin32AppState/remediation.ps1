@@ -28,6 +28,9 @@ $script:exitCodeSuccess               = 0
 $script:exitCodeFailure               = 1
 $script:win32EnforcementSuccess       = 0
 $script:win32EnforcementPendingReboot = 3010
+$script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
+$script:contentIncomingPath           = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Content\Incoming"
+$script:imeCachePath                  = "$env:SystemRoot\IMECache"
 
 # ---------------------------[ Logging Function ]---------------------------
 function Write-Log {
@@ -116,22 +119,33 @@ function Get-FailedWin32AppStates {
         }
 
         $messageText = $enforcementStateMessage.EnforcementStateMessage
+
+        $parsedErrorCode = $null
         if ($messageText -match '"ErrorCode"\s*:\s*(-?\d+|null)') {
-            $errorCodeToken = $Matches[1]
-            if ($errorCodeToken -eq 'null') {
-                continue
+            $token = $Matches[1]
+            if ($token -ne 'null') {
+                $parsedErrorCode = [int]$token
             }
+        }
 
-            $parsedErrorCode = [int]$errorCodeToken
-            $isSuccess       = ($parsedErrorCode -eq $script:win32EnforcementSuccess)
-            $isSoftRebootOk  = ($parsedErrorCode -eq $script:win32EnforcementPendingReboot)
+        $parsedEnforcementState = $null
+        if ($messageText -match '"EnforcementState"\s*:\s*(\d+)') {
+            $parsedEnforcementState = [int]$Matches[1]
+        }
 
-            if ((-not $isSuccess) -and (-not $isSoftRebootOk)) {
-                $failedStates.Add([PSCustomObject]@{
-                    subKeyPath = $subKey.PSPath
-                    errorCode  = $parsedErrorCode
-                }) | Out-Null
-            }
+        $hasErrorCode = ($null -ne $parsedErrorCode) -and
+                        ($parsedErrorCode -ne $script:win32EnforcementSuccess) -and
+                        ($parsedErrorCode -ne $script:win32EnforcementPendingReboot)
+
+        $hasFailedState = ($null -ne $parsedEnforcementState) -and
+                          ($script:enforcementStateFailures -contains $parsedEnforcementState)
+
+        if ($hasErrorCode -or $hasFailedState) {
+            $failedStates.Add([PSCustomObject]@{
+                subKeyPath       = $subKey.PSPath
+                errorCode        = if ($null -ne $parsedErrorCode) { $parsedErrorCode } else { 0 }
+                enforcementState = if ($null -ne $parsedEnforcementState) { $parsedEnforcementState } else { 0 }
+            }) | Out-Null
         }
     }
 
@@ -206,29 +220,89 @@ function Get-LastHashValue {
     return $reportingKey.LastHashValue
 }
 
+function Find-GRSEntryForApp {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $userObjectId,
+
+        [Parameter(Mandatory = $true)]
+        [string] $appId
+    )
+
+    $baseAppId = $appId -replace '_\d+$', ''
+    $grsBasePath = "$($script:win32AppsKeyPath)\$userObjectId\GRS"
+
+    if (-not (Test-Path -LiteralPath $grsBasePath)) {
+        Write-Log "GRS path does not exist for user $userObjectId; nothing to match." -Tag "Debug"
+        return $null
+    }
+
+    $grsEntries = Get-ChildItem -LiteralPath $grsBasePath -ErrorAction SilentlyContinue
+    if (-not $grsEntries) {
+        return $null
+    }
+
+    foreach ($entry in $grsEntries) {
+        $props = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
+        if (-not $props) { continue }
+
+        $customPropNames = $props.PSObject.Properties.Name | Where-Object { $_ -notlike 'PS*' }
+        $matchingProp    = $customPropNames | Where-Object { $_ -like "*$baseAppId*" }
+
+        if ($matchingProp) {
+            return [PSCustomObject]@{
+                path = $entry.PSPath
+                hash = $entry.PSChildName
+            }
+        }
+    }
+
+    return $null
+}
+
+function Remove-ContentCacheForHash {
+    param (
+        [Parameter(Mandatory = $true)]
+        [string] $contentHash
+    )
+
+    $binPath   = Join-Path -Path $script:contentIncomingPath -ChildPath "$contentHash.bin"
+    $cachePath = Join-Path -Path $script:imeCachePath -ChildPath $contentHash
+
+    if (Test-Path -LiteralPath $binPath) {
+        try {
+            Remove-Item -LiteralPath $binPath -Force -ErrorAction Stop
+            Write-Log "Removed cached content package: $binPath" -Tag "Success"
+        }
+        catch {
+            Write-Log "Failed to remove cached package '$binPath': $($_.Exception.Message)" -Tag "Error"
+        }
+    }
+
+    if (Test-Path -LiteralPath $cachePath) {
+        try {
+            Remove-Item -LiteralPath $cachePath -Recurse -Force -ErrorAction Stop
+            Write-Log "Removed extracted content cache: $cachePath" -Tag "Success"
+        }
+        catch {
+            Write-Log "Failed to remove cache folder '$cachePath': $($_.Exception.Message)" -Tag "Error"
+        }
+    }
+}
+
 function Remove-FailedAppRegistryKeys {
     param (
         [Parameter(Mandatory = $true)]
         [string] $userObjectId,
 
         [Parameter(Mandatory = $true)]
-        [string] $appId,
-
-        [Parameter(Mandatory = $false)]
-        $lastHashValue
+        [string] $appId
     )
 
-    $pathsToRemove = [System.Collections.Generic.List[string]]::new()
-    $pathsToRemove.Add("HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps\$userObjectId\$appId") | Out-Null
-    $pathsToRemove.Add("HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps\Reporting\$userObjectId\$appId") | Out-Null
-
-    if (-not [string]::IsNullOrWhiteSpace($lastHashValue)) {
-        $pathsToRemove.Add("HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps\$userObjectId\GRS\$lastHashValue") | Out-Null
-        Write-Log "GRS cleanup will target hash-specific key: $lastHashValue" -Tag "Debug"
-    }
-    else {
-        Write-Log "LastHashValue not available; skipping GRS hash key removal for user $userObjectId, app $appId." -Tag "Debug"
-    }
+    $pathsToRemove = @(
+        "$($script:win32AppsKeyPath)\$userObjectId\$appId",
+        "HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps\Reporting\$userObjectId\$appId"
+    )
 
     foreach ($path in $pathsToRemove) {
         if (-not (Test-Path -LiteralPath $path)) {
@@ -387,9 +461,10 @@ foreach ($state in $failedStates) {
     $dedupeKey = "$($scope.userObjectId)|$($scope.appId)"
     if (-not $uniqueTargets.ContainsKey($dedupeKey)) {
         $uniqueTargets[$dedupeKey] = [PSCustomObject]@{
-            userObjectId = $scope.userObjectId
-            appId        = $scope.appId
-            errorCode    = $state.errorCode
+            userObjectId     = $scope.userObjectId
+            appId            = $scope.appId
+            errorCode        = $state.errorCode
+            enforcementState = $state.enforcementState
         }
     }
 }
@@ -406,20 +481,57 @@ foreach ($target in $uniqueTargets.Values) {
     $displayUser = if ($userName) { $userName } else { $target.userObjectId }
     $errorDescription = Get-ErrorDescription -msiErrorCode $target.errorCode
 
-    Write-Log "Installation of AppId $($target.appId) failed for $displayUser with error code $($target.errorCode) - $errorDescription" -Tag "Info"
-
-    $lastHashValue = Get-LastHashValue -userObjectId $target.userObjectId -appId $target.appId
+    Write-Log "AppId $($target.appId) failed for $displayUser — ErrorCode $($target.errorCode) ($errorDescription), EnforcementState $($target.enforcementState)" -Tag "Info"
 
     try {
-        Remove-FailedAppRegistryKeys -userObjectId $target.userObjectId -appId $target.appId -lastHashValue $lastHashValue
+        Remove-FailedAppRegistryKeys -userObjectId $target.userObjectId -appId $target.appId
     }
     catch {
         $remediationError = $true
+        continue
+    }
+
+    $contentHash = $null
+    $grsEntry = Find-GRSEntryForApp -userObjectId $target.userObjectId -appId $target.appId
+    if ($grsEntry) {
+        $contentHash = $grsEntry.hash
+        try {
+            Remove-Item -LiteralPath $grsEntry.path -Recurse -Force -ErrorAction Stop
+            Write-Log "Removed GRS entry '$($grsEntry.hash)' matched to AppId $($target.appId)" -Tag "Success"
+        }
+        catch {
+            Write-Log "Failed to remove GRS entry '$($grsEntry.path)': $($_.Exception.Message)" -Tag "Error"
+            $remediationError = $true
+        }
+    }
+    else {
+        Write-Log "No GRS entry found via property match for AppId $($target.appId); trying LastHashValue fallback." -Tag "Debug"
+        $contentHash = Get-LastHashValue -userObjectId $target.userObjectId -appId $target.appId
+        if ($contentHash) {
+            $grsHashPath = "$($script:win32AppsKeyPath)\$($target.userObjectId)\GRS\$contentHash"
+            if (Test-Path -LiteralPath $grsHashPath) {
+                try {
+                    Remove-Item -LiteralPath $grsHashPath -Recurse -Force -ErrorAction Stop
+                    Write-Log "Removed GRS entry via LastHashValue fallback: $contentHash" -Tag "Success"
+                }
+                catch {
+                    Write-Log "Failed to remove GRS entry '$grsHashPath': $($_.Exception.Message)" -Tag "Error"
+                    $remediationError = $true
+                }
+            }
+        }
+        else {
+            Write-Log "No GRS hash could be determined for AppId $($target.appId); GRS entry may persist." -Tag "Debug"
+        }
+    }
+
+    if ($contentHash) {
+        Remove-ContentCacheForHash -contentHash $contentHash
     }
 }
 
 if ($remediationError) {
-    Write-Log "One or more registry removals failed; not restarting IME." -Tag "Error"
+    Write-Log "One or more cleanup operations failed; not restarting IME." -Tag "Error"
     Complete-Script -exitCode $script:exitCodeFailure
 }
 

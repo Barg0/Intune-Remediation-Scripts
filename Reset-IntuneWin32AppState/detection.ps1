@@ -25,6 +25,7 @@ $script:exitCodeCompliant             = 0
 $script:exitCodeNonCompliant          = 1
 $script:win32EnforcementSuccess       = 0
 $script:win32EnforcementPendingReboot = 3010
+$script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
 
 # ---------------------------[ Logging Function ]---------------------------
 function Write-Log {
@@ -113,23 +114,34 @@ function Get-FailedWin32AppStates {
         }
 
         $messageText = $enforcementStateMessage.EnforcementStateMessage
+
+        $parsedErrorCode = $null
         if ($messageText -match '"ErrorCode"\s*:\s*(-?\d+|null)') {
-            $errorCodeToken = $Matches[1]
-            if ($errorCodeToken -eq 'null') {
-                continue
+            $token = $Matches[1]
+            if ($token -ne 'null') {
+                $parsedErrorCode = [int]$token
             }
+        }
 
-            $parsedErrorCode = [int]$errorCodeToken
-            $isSuccess       = ($parsedErrorCode -eq $script:win32EnforcementSuccess)
-            $isSoftRebootOk  = ($parsedErrorCode -eq $script:win32EnforcementPendingReboot)
+        $parsedEnforcementState = $null
+        if ($messageText -match '"EnforcementState"\s*:\s*(\d+)') {
+            $parsedEnforcementState = [int]$Matches[1]
+        }
 
-            if ((-not $isSuccess) -and (-not $isSoftRebootOk)) {
-                $failedStates.Add([PSCustomObject]@{
-                    subKeyPath = $subKey.PSPath
-                    errorCode  = $parsedErrorCode
-                }) | Out-Null
-                Write-Log "Failed state at '$($subKey.PSPath)' with ErrorCode $parsedErrorCode" -Tag "Debug"
-            }
+        $hasErrorCode = ($null -ne $parsedErrorCode) -and
+                        ($parsedErrorCode -ne $script:win32EnforcementSuccess) -and
+                        ($parsedErrorCode -ne $script:win32EnforcementPendingReboot)
+
+        $hasFailedState = ($null -ne $parsedEnforcementState) -and
+                          ($script:enforcementStateFailures -contains $parsedEnforcementState)
+
+        if ($hasErrorCode -or $hasFailedState) {
+            $failedStates.Add([PSCustomObject]@{
+                subKeyPath       = $subKey.PSPath
+                errorCode        = if ($null -ne $parsedErrorCode) { $parsedErrorCode } else { 0 }
+                enforcementState = if ($null -ne $parsedEnforcementState) { $parsedEnforcementState } else { 0 }
+            }) | Out-Null
+            Write-Log "Failed state at '$($subKey.PSPath)' — ErrorCode $parsedErrorCode, EnforcementState $parsedEnforcementState" -Tag "Debug"
         }
     }
 
@@ -143,12 +155,12 @@ Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scri
 $failedStates  = @(Get-FailedWin32AppStates)
 $failureCount  = $failedStates.Count
 
-Write-Log "Scan complete: $failureCount failed Win32 app state(s) (EnforcementStateMessage ErrorCode)." -Tag "Get"
+Write-Log "Scan complete: $failureCount failed Win32 app state(s) (ErrorCode and/or EnforcementState)." -Tag "Get"
 
 if ($failureCount -gt 0) {
     Write-Log "Non-compliant: $failureCount failure(s) detected; remediation should run." -Tag "Info"
     Complete-Script -exitCode $script:exitCodeNonCompliant
 }
 
-Write-Log "Compliant: no failed Win32 app ErrorCode states detected." -Tag "Success"
+Write-Log "Compliant: no failed Win32 app states detected." -Tag "Success"
 Complete-Script -exitCode $script:exitCodeCompliant
