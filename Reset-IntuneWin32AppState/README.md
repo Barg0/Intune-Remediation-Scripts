@@ -21,7 +21,7 @@ This repo is **inspired by and aligned with** the excellent walkthrough on **Cal
 
 - 🔗 **[Trigger IME to retry failed Win32App Installation \| Intune](https://call4cloud.nl/retry-failed-win32app-installation/)** — by **Rudy Ooms** on **Call4cloud**
 
-**Huge thanks** 🎉 to Rudy and Call4cloud for documenting the registry behavior, GRS nuances, and the original **detection / remediation** pattern. The reference scripts that shipped with that post live in this repo under **`web resource/`** (`grsdetection.txt`, `grsremediation.txt`) for comparison.
+**Huge thanks** 🎉 to Rudy and Call4cloud for documenting the registry behavior, GRS nuances, and the original **detection / remediation** pattern.
 
 ---
 
