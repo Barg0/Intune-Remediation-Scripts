@@ -24,10 +24,6 @@ $script:win32AppsKeyPath              = 'HKLM:\SOFTWARE\Microsoft\IntuneManageme
 $script:intuneManagementExtensionServiceName = 'IntuneManagementExtension'
 $script:systemObjectId                = '00000000-0000-0000-0000-000000000000'
 $script:officeIdentityMajorVersion    = '16.0'
-$script:exitCodeSuccess               = 0
-$script:exitCodeFailure               = 1
-$script:win32EnforcementSuccess       = 0
-$script:win32EnforcementPendingReboot = 3010
 $script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
 $script:contentIncomingPath           = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Content\Incoming"
 $script:imeCachePath                  = "$env:SystemRoot\IMECache"
@@ -134,8 +130,8 @@ function Get-FailedWin32AppStates {
         }
 
         $hasErrorCode = ($null -ne $parsedErrorCode) -and
-                        ($parsedErrorCode -ne $script:win32EnforcementSuccess) -and
-                        ($parsedErrorCode -ne $script:win32EnforcementPendingReboot)
+                        ($parsedErrorCode -ne 0) -and
+                        ($parsedErrorCode -ne 3010)
 
         $hasFailedState = ($null -ne $parsedEnforcementState) -and
                           ($script:enforcementStateFailures -contains $parsedEnforcementState)
@@ -470,7 +466,7 @@ $failureCount = $failedStates.Count
 
 if ($failureCount -eq 0) {
     Write-Log "No failures detected; nothing to remediate." -Tag "Success"
-    Complete-Script -exitCode $script:exitCodeSuccess
+    Complete-Script -exitCode 0
 }
 
 Write-Log "Detected $failureCount failed Win32 app registry state(s); resolving user scope and AppId for cleanup." -Tag "Get"
@@ -496,7 +492,7 @@ foreach ($state in $failedStates) {
 
 if ($uniqueTargets.Count -eq 0) {
     Write-Log "Failures were found but no registry paths could be mapped to user/AppId; no keys removed." -Tag "Error"
-    Complete-Script -exitCode $script:exitCodeFailure
+    Complete-Script -exitCode 1
 }
 
 $remediationError = $false
@@ -506,7 +502,7 @@ foreach ($target in $uniqueTargets.Values) {
     $displayUser = if ($userName) { $userName } else { $target.userObjectId }
     $errorDescription = Get-ErrorDescription -msiErrorCode $target.errorCode
 
-    Write-Log "AppId $($target.appId) failed for $displayUser — ErrorCode $($target.errorCode) ($errorDescription), EnforcementState $($target.enforcementState)" -Tag "Info"
+    Write-Log "AppId $($target.appId) failed for $displayUser - ErrorCode $($target.errorCode) ($errorDescription), EnforcementState $($target.enforcementState)" -Tag "Info"
 
     try {
         Remove-FailedAppRegistryKeys -userObjectId $target.userObjectId -appId $target.appId
@@ -561,15 +557,15 @@ foreach ($target in $uniqueTargets.Values) {
 
 if ($remediationError) {
     Write-Log "One or more cleanup operations failed; not restarting IME." -Tag "Error"
-    Complete-Script -exitCode $script:exitCodeFailure
+    Complete-Script -exitCode 1
 }
 
 try {
     Restart-IntuneManagementExtensionService
 }
 catch {
-    Complete-Script -exitCode $script:exitCodeFailure
+    Complete-Script -exitCode 1
 }
 
 Write-Log "Remediation finished for $($uniqueTargets.Count) app scope(s). Allow time for IME sync and retry." -Tag "Success"
-Complete-Script -exitCode $script:exitCodeSuccess
+Complete-Script -exitCode 0

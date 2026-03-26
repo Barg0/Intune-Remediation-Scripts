@@ -21,10 +21,6 @@ if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
 
 # ---------------------------[ Constants ]---------------------------
 $script:win32AppsKeyPath              = 'HKLM:\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps'
-$script:exitCodeCompliant             = 0
-$script:exitCodeNonCompliant          = 1
-$script:win32EnforcementSuccess       = 0
-$script:win32EnforcementPendingReboot = 3010
 $script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
 
 # ---------------------------[ Logging Function ]---------------------------
@@ -129,8 +125,8 @@ function Get-FailedWin32AppStates {
         }
 
         $hasErrorCode = ($null -ne $parsedErrorCode) -and
-                        ($parsedErrorCode -ne $script:win32EnforcementSuccess) -and
-                        ($parsedErrorCode -ne $script:win32EnforcementPendingReboot)
+                        ($parsedErrorCode -ne 0) -and
+                        ($parsedErrorCode -ne 3010)
 
         $hasFailedState = ($null -ne $parsedEnforcementState) -and
                           ($script:enforcementStateFailures -contains $parsedEnforcementState)
@@ -141,7 +137,7 @@ function Get-FailedWin32AppStates {
                 errorCode        = if ($null -ne $parsedErrorCode) { $parsedErrorCode } else { 0 }
                 enforcementState = if ($null -ne $parsedEnforcementState) { $parsedEnforcementState } else { 0 }
             }) | Out-Null
-            Write-Log "Failed state at '$($subKey.PSPath)' — ErrorCode $parsedErrorCode, EnforcementState $parsedEnforcementState" -Tag "Debug"
+            Write-Log "Failed state at '$($subKey.PSPath)' - ErrorCode $parsedErrorCode, EnforcementState $parsedEnforcementState" -Tag "Debug"
         }
     }
 
@@ -159,8 +155,8 @@ Write-Log "Scan complete: $failureCount failed Win32 app state(s) (ErrorCode and
 
 if ($failureCount -gt 0) {
     Write-Log "Non-compliant: $failureCount failure(s) detected; remediation should run." -Tag "Info"
-    Complete-Script -exitCode $script:exitCodeNonCompliant
+    Complete-Script -exitCode 1
 }
 
 Write-Log "Compliant: no failed Win32 app states detected." -Tag "Success"
-Complete-Script -exitCode $script:exitCodeCompliant
+Complete-Script -exitCode 0
