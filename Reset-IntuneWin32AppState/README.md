@@ -1,76 +1,78 @@
-# 🔄 Reset-IntuneWin32AppState
+# Reset Win32 app retry state (Intune Proactive Remediation)
 
-PowerShell **proactive remediation** pair for **Microsoft Intune**: detect failed **Win32 app** enforcement states locally, clear the right **registry** + **GRS** (Global Re-evaluation Schedule) data, and **restart the Intune Management Extension (IME)** so installs can be **evaluated again**—without waiting on the default retry schedule.
-
----
-
-## ✨ What it does (in plain language)
-
-| Piece | Role |
-|--------|------|
-| 📋 **`detection.ps1`** | Scans `HKLM\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps` for `EnforcementStateMessage`, reads the JSON-style `ErrorCode`, and decides if something is in a **failed** state (not success `0`, not soft-reboot `3010`). **Exit `0`** = compliant (no action). **Exit `1`** = non-compliant → run remediation. |
-| 🛠️ **`remediation.ps1`** | For each failed scope, finds **user** + **app** from the registry path, reads **`LastHashValue`** from **Reporting** when present, removes the **app**, **Reporting**, and the matching **GRS hash** subkey (only when a hash exists—safer than wiping a whole GRS branch), then **restarts** `IntuneManagementExtension`. |
-
-Together they implement the same **idea** as the Call4cloud GRS / Win32 retry articles: reset local IME state so Intune can **retry** instead of sitting behind GRS timing.
+This repository contains a **Microsoft Intune Proactive Remediation** pair written in PowerShell. Together, the scripts detect **failed Win32 app** enforcement state stored by the **Intune Management Extension (IME)** on a Windows device, clear the relevant **local registry and cache** data so IME is not blocked by stale state (including **GRS**—Global Re-evaluation Schedule), and **restart** the IME service so assignments can be evaluated again without waiting for the default backoff schedule.
 
 ---
 
-## 🙏 Credits & references
+## What the scripts do
 
-This repo is **inspired by and aligned with** the excellent walkthrough on **Call4cloud**:
+### `detection.ps1`
 
-- 🔗 **[Trigger IME to retry failed Win32App Installation \| Intune](https://call4cloud.nl/retry-failed-win32app-installation/)** — by **Rudy Ooms** on **Call4cloud**
+- Reads subkeys under  
+  `HKLM\SOFTWARE\Microsoft\IntuneManagementExtension\Win32Apps`  
+  and looks for the **`EnforcementStateMessage`** value (JSON-like text).
+- Treats the device as **non-compliant** (exit code **1**) when either:
+  - **`ErrorCode`** is present and is neither success (**0**) nor the common pending-reboot success (**3010**), or  
+  - **`EnforcementState`** matches known failure states used by IME (for example download or service communication failures that may appear even when `ErrorCode` is zero or misleading).
+- Otherwise exits **0** (compliant)—no remediation run.
 
-**Huge thanks** 🎉 to Rudy and Call4cloud for documenting the registry behavior, GRS nuances, and the original **detection / remediation** pattern. The reference scripts that shipped with that post live in this repo under **`web resource/`** (`grsdetection.txt`, `grsremediation.txt`) for comparison.
+### `remediation.ps1`
+
+Runs when detection reports failure. For each distinct **user scope** (Entra user object ID or device scope) and **app id** inferred from the registry path, it:
+
+1. Removes the **app** state key and the **Reporting** subtree for that app (under `Win32Apps` and `Win32Apps\Reporting`).
+2. Finds and removes **all matching subkeys** under  
+   `...\Win32Apps\<scope>\GRS\`  
+   by aligning with current IME behavior: the app identifier may appear in the **GRS subkey name** and/or in **value names** on that key (see references below). If nothing matches, it may fall back to **`LastHashValue`** from reporting when that data still exists.
+3. Optionally clears **content cache** for resolved content hashes (encrypted package under IME `Content\Incoming` and extracted files under `%WINDIR%\IMECache`) so the next attempt can fetch fresh content.
+4. **Restarts** the **`IntuneManagementExtension`** Windows service.
+
+Remediation is **reactive**: it addresses **locally recorded** failure state. It does not fix root causes such as network outages, TLS or proxy issues, expired device management certificates, bad installers, or detection rules that still report the app as installed. After major IME updates, validate behavior on a test device.
 
 ---
 
-## 🚀 Intune deployment
+## Logging
 
-1. Create a **Proactive remediation** in Intune.
+Scripts log under:
+
+`%ProgramData%\IntuneLogs\Scripts\Reset-Win32AppState\`
+
+- `detection.log` — detection runs  
+- `remediation.log` — remediation runs  
+
+Enable verbose **`Debug`** lines by setting `$logDebug = $true` inside the script you are troubleshooting.
+
+---
+
+## Deploying in Intune
+
+1. In **Microsoft Intune**, create a **Proactive remediation** policy.
 2. Upload **`detection.ps1`** as the detection script and **`remediation.ps1`** as the remediation script.
-3. Assign to the right groups and schedule (or run on demand).
-4. **Remediation** must run with sufficient rights (typically **SYSTEM** as deployed by Intune) because it touches **HKLM** and restarts a service.
-
-> 💡 Intune does **not** pass parameters to these scripts—they are written for **upload-and-run** only.
+3. Assign to the appropriate groups and schedule (or use on-demand remediation where available).
+4. Ensure the remediation runs in a context that can modify **HKLM** and restart services (**SYSTEM** is typical).
 
 ---
 
-## 📝 Logging
+## Credits and references
 
-Logs use the shared folder name **`Reset-IntuneWin32AppState`**:
+This project builds on community documentation and troubleshooting patterns for IME Win32 apps. Thank you to the authors and sites below.
 
-- 📂 `%ProgramData%\IntuneLogs\Scripts\Reset-IntuneWin32AppState\`
-- 📄 `detection.log` — detection run
-- 📄 `remediation.log` — remediation run
+| Topic | Reference |
+|--------|-----------|
+| Original idea of clearing Win32 app registry state and GRS-related data to force IME to retry failed installs | **Rudy Ooms**, [Trigger IME to retry failed Win32App Installation](https://call4cloud.nl/retry-failed-win32app-installation/) — **Call4cloud** |
+| Registry layout, deleting app keys under `Win32Apps`, and locating **GRS** subkeys (including updated 2026 notes on app id and GRS key names) | **Johan Arwidmark**, [Force Application Reinstall in Microsoft Intune (Win32 Apps)](https://www.deploymentresearch.com/force-application-reinstall-in-microsoft-intune-win32-apps/) — **Deployment Research** |
+| Practical approach to matching GRS registry entries to an app without relying on log parsing | **David Bolding**, [Force Intune apps to redeploy](https://therandomadmin.com/2025/01/01/force-intune-apps-to-redeploy/) — **The Random Admin** (also credited from Deployment Research) |
+| **`EnforcementState`**, **`ComplianceState`**, and related numeric codes as stored in registry JSON | **Ben Whitmore**, [Win32 app State Messages Demystified](https://msendpointmgr.com/2023/08/28/win32-app-state-messages-demystified/) — **MSEndpointMgr** |
 
-Toggle **`$logDebug = $true`** inside either script when you want extra **Debug**-tag detail for troubleshooting.
-
----
-
-## ⚠️ Heads-up
-
-- 🧪 **Test on a non-production device** first. Registry cleanup affects **local IME Win32 state** for failed apps.
-- 📚 Microsoft may change IME registry layout; after major IME updates, re-verify behavior against logs and the Call4cloud article.
-- 🏥 This is a **support / recovery** tool, not a substitute for fixing root causes (bad installer, detection rules, dependencies, etc.).
+Additional context on Intune app deployment and troubleshooting appears in Microsoft’s own documentation (for example [Intune Win32 app management](https://learn.microsoft.com/en-us/mem/intune/apps/apps-win32-app-management)) and in the broader MEM community.
 
 ---
 
-## 📁 Repo layout
+## Repository contents
 
-| Path | Purpose |
-|------|--------|
-| `detection.ps1` | Intune detection script |
-| `remediation.ps1` | Intune remediation script |
-| `web resource/grsdetection.txt` | Original blog-style detection reference |
-| `web resource/grsremediation.txt` | Original blog-style remediation reference |
+| File | Purpose |
+|------|---------|
+| `detection.ps1` | Proactive remediation detection script |
+| `remediation.ps1` | Proactive remediation remediation script |
 
 ---
-
-## 📜 License
-
-If you publish this repo, add a license you are comfortable with. *(Not set in this README.)*
-
----
-
-*Built with ☕ and gratitude to the Intune community—especially **Call4cloud** for lighting the way.* ✨

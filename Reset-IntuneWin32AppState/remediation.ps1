@@ -2,7 +2,7 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Script Name ]---------------------------
-$scriptName  = "Reset-IntuneWin32AppState"
+$scriptName  = "Reset-Win32AppState"
 $logFileName = "remediation.log"
 
 # ---------------------------[ Logging Setup ]---------------------------
@@ -220,7 +220,7 @@ function Get-LastHashValue {
     return $reportingKey.LastHashValue
 }
 
-function Find-GRSEntryForApp {
+function Get-GRSEntriesForApp {
     param (
         [Parameter(Mandatory = $true)]
         [string] $userObjectId,
@@ -231,33 +231,57 @@ function Find-GRSEntryForApp {
 
     $baseAppId = $appId -replace '_\d+$', ''
     $grsBasePath = "$($script:win32AppsKeyPath)\$userObjectId\GRS"
+    $results     = [System.Collections.Generic.List[object]]::new()
 
     if (-not (Test-Path -LiteralPath $grsBasePath)) {
         Write-Log "GRS path does not exist for user $userObjectId; nothing to match." -Tag "Debug"
-        return $null
+        return $results
     }
 
     $grsEntries = Get-ChildItem -LiteralPath $grsBasePath -ErrorAction SilentlyContinue
     if (-not $grsEntries) {
-        return $null
+        return $results
     }
 
     foreach ($entry in $grsEntries) {
-        $props = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
-        if (-not $props) { continue }
+        $matched = $false
 
-        $customPropNames = $props.PSObject.Properties.Name | Where-Object { $_ -notlike 'PS*' }
-        $matchingProp    = $customPropNames | Where-Object { $_ -like "*$baseAppId*" }
+        # 2026 IME: AppId can appear in the GRS *subkey* name (see Deployment Research Jan 2026 update).
+        if ($entry.PSChildName -like "*$baseAppId*") {
+            $matched = $true
+        }
 
-        if ($matchingProp) {
-            return [PSCustomObject]@{
+        if (-not $matched) {
+            $props = Get-ItemProperty -LiteralPath $entry.PSPath -ErrorAction SilentlyContinue
+            if ($props) {
+                $customPropNames = $props.PSObject.Properties.Name | Where-Object { $_ -notlike 'PS*' }
+                # Article: value names that look like GUIDs and contain the AppId (Random Admin / Deployment Research loop).
+                $guidLikeNames = $customPropNames | Where-Object { $_ -like '*-*-*-*-*' }
+                foreach ($name in $guidLikeNames) {
+                    if ($name -like "*$baseAppId*") {
+                        $matched = $true
+                        break
+                    }
+                }
+
+                if (-not $matched) {
+                    $anyName = $customPropNames | Where-Object { $_ -like "*$baseAppId*" }
+                    if ($anyName) {
+                        $matched = $true
+                    }
+                }
+            }
+        }
+
+        if ($matched) {
+            $results.Add([PSCustomObject]@{
                 path = $entry.PSPath
                 hash = $entry.PSChildName
-            }
+            }) | Out-Null
         }
     }
 
-    return $null
+    return $results
 }
 
 function Remove-ContentCacheForHash {
@@ -414,9 +438,10 @@ function Get-ErrorDescription {
         [uint32]0x80070675 = "Couldn't perform a multiple-package transaction because rollback has been disabled. Multiple-package installations can't run if rollback is disabled. Available beginning with Windows Installer version 4.5."
         [uint32]0x80070676 = "The app that you're trying to run isn't supported on this version of Windows. A Windows Installer package, patch, or transform that has not been signed by Microsoft can't be installed on an ARM computer."
         [uint32]0x80070BB8 = "A restart is required to complete the install. This message indicates success. This does not include installs where the ForceReboot action is run."
+        [uint32]"0x87D30065" = "Intune Win32: Failed to retrieve information from the service (metadata or policy fetch). Often network, TLS, proxy, or device management certificate issues. See Intune installation details and IME logs."
     }
 
-    $lookup = [uint32]$msiErrorCode
+    $lookup = [BitConverter]::ToUInt32([BitConverter]::GetBytes([int32]$msiErrorCode), 0)
     if ($errorCodes.ContainsKey($lookup)) {
         return $errorCodes[$lookup]
     }
@@ -491,42 +516,46 @@ foreach ($target in $uniqueTargets.Values) {
         continue
     }
 
-    $contentHash = $null
-    $grsEntry = Find-GRSEntryForApp -userObjectId $target.userObjectId -appId $target.appId
-    if ($grsEntry) {
-        $contentHash = $grsEntry.hash
-        try {
-            Remove-Item -LiteralPath $grsEntry.path -Recurse -Force -ErrorAction Stop
-            Write-Log "Removed GRS entry '$($grsEntry.hash)' matched to AppId $($target.appId)" -Tag "Success"
-        }
-        catch {
-            Write-Log "Failed to remove GRS entry '$($grsEntry.path)': $($_.Exception.Message)" -Tag "Error"
-            $remediationError = $true
+    $grsEntries = @(Get-GRSEntriesForApp -userObjectId $target.userObjectId -appId $target.appId)
+    $hashesForCache = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+
+    if ($grsEntries.Count -gt 0) {
+        foreach ($grsEntry in $grsEntries) {
+            try {
+                Remove-Item -LiteralPath $grsEntry.path -Recurse -Force -ErrorAction Stop
+                Write-Log "Removed GRS subkey '$($grsEntry.hash)' for AppId $($target.appId)" -Tag "Success"
+                [void]$hashesForCache.Add($grsEntry.hash)
+            }
+            catch {
+                Write-Log "Failed to remove GRS subkey '$($grsEntry.path)': $($_.Exception.Message)" -Tag "Error"
+                $remediationError = $true
+            }
         }
     }
     else {
-        Write-Log "No GRS entry found via property match for AppId $($target.appId); trying LastHashValue fallback." -Tag "Debug"
-        $contentHash = Get-LastHashValue -userObjectId $target.userObjectId -appId $target.appId
-        if ($contentHash) {
-            $grsHashPath = "$($script:win32AppsKeyPath)\$($target.userObjectId)\GRS\$contentHash"
+        Write-Log "No GRS subkey matched for AppId $($target.appId); trying LastHashValue fallback." -Tag "Debug"
+        $fallbackHash = Get-LastHashValue -userObjectId $target.userObjectId -appId $target.appId
+        if ($fallbackHash) {
+            $grsHashPath = "$($script:win32AppsKeyPath)\$($target.userObjectId)\GRS\$fallbackHash"
             if (Test-Path -LiteralPath $grsHashPath) {
                 try {
                     Remove-Item -LiteralPath $grsHashPath -Recurse -Force -ErrorAction Stop
-                    Write-Log "Removed GRS entry via LastHashValue fallback: $contentHash" -Tag "Success"
+                    Write-Log "Removed GRS subkey via LastHashValue fallback: $fallbackHash" -Tag "Success"
+                    [void]$hashesForCache.Add($fallbackHash)
                 }
                 catch {
-                    Write-Log "Failed to remove GRS entry '$grsHashPath': $($_.Exception.Message)" -Tag "Error"
+                    Write-Log "Failed to remove GRS subkey '$grsHashPath': $($_.Exception.Message)" -Tag "Error"
                     $remediationError = $true
                 }
             }
         }
         else {
-            Write-Log "No GRS hash could be determined for AppId $($target.appId); GRS entry may persist." -Tag "Debug"
+            Write-Log "No GRS subkey could be resolved for AppId $($target.appId); schedule entry may persist." -Tag "Debug"
         }
     }
 
-    if ($contentHash) {
-        Remove-ContentCacheForHash -contentHash $contentHash
+    foreach ($h in $hashesForCache) {
+        Remove-ContentCacheForHash -contentHash $h
     }
 }
 

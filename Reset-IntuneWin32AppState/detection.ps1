@@ -2,7 +2,7 @@
 $scriptStartTime = Get-Date
 
 # ---------------------------[ Script Name ]---------------------------
-$scriptName  = "Reset-IntuneWin32AppState"
+$scriptName  = "Reset-Win32AppState"
 $logFileName = "detection.log"
 
 # ---------------------------[ Logging Setup ]---------------------------
