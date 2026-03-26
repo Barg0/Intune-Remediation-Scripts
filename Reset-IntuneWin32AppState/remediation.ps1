@@ -27,6 +27,8 @@ $script:officeIdentityMajorVersion    = '16.0'
 $script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
 $script:contentIncomingPath           = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Content\Incoming"
 $script:imeCachePath                  = "$env:SystemRoot\IMECache"
+$script:intuneAgentExePath             = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe"
+$script:intuneComplianceSyncArgument    = "intunemanagementextension://synccompliance"
 
 # ---------------------------[ Logging Function ]---------------------------
 function Write-Log {
@@ -457,6 +459,23 @@ function Restart-IntuneManagementExtensionService {
     }
 }
 
+function Invoke-IntuneComplianceSyncTrigger {
+    if (-not (Test-Path -LiteralPath $script:intuneAgentExePath)) {
+        Write-Log "Intune agent executable not found, skipping sync trigger: $($script:intuneAgentExePath)" -Tag "Debug"
+        return
+    }
+
+    try {
+        Write-Log "Triggering Intune compliance sync via IntuneWindowsAgent URI." -Tag "Run"
+        Start-Process -FilePath $script:intuneAgentExePath -ArgumentList $script:intuneComplianceSyncArgument -PassThru -ErrorAction Stop | Out-Null
+        Write-Log "Intune compliance sync trigger started: $($script:intuneComplianceSyncArgument)" -Tag "Success"
+    }
+    catch {
+        # Do not fail remediation if the URI trigger is blocked in current context.
+        Write-Log "Could not trigger Intune compliance sync: $($_.Exception.Message)" -Tag "Debug"
+    }
+}
+
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
@@ -566,6 +585,8 @@ try {
 catch {
     Complete-Script -exitCode 1
 }
+
+Invoke-IntuneComplianceSyncTrigger
 
 Write-Log "Remediation finished for $($uniqueTargets.Count) app scope(s). Allow time for IME sync and retry." -Tag "Success"
 Complete-Script -exitCode 0
