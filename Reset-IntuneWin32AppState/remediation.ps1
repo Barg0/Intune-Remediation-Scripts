@@ -27,8 +27,6 @@ $script:officeIdentityMajorVersion    = '16.0'
 $script:enforcementStateFailures      = @(5000, 5003, 5006, 5999)
 $script:contentIncomingPath           = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Content\Incoming"
 $script:imeCachePath                  = "$env:SystemRoot\IMECache"
-$script:intuneAgentExePath             = "${env:ProgramFiles(x86)}\Microsoft Intune Management Extension\Microsoft.Management.Services.IntuneWindowsAgent.exe"
-$script:intuneComplianceSyncArgument    = "intunemanagementextension://synccompliance"
 
 # ---------------------------[ Logging Function ]---------------------------
 function Write-Log {
@@ -459,20 +457,16 @@ function Restart-IntuneManagementExtensionService {
     }
 }
 
-function Invoke-IntuneComplianceSyncTrigger {
-    if (-not (Test-Path -LiteralPath $script:intuneAgentExePath)) {
-        Write-Log "Intune agent executable not found, skipping sync trigger: $($script:intuneAgentExePath)" -Tag "Debug"
-        return
-    }
-
+function Invoke-IMESyncAppMonikerTrigger {
     try {
-        Write-Log "Triggering Intune compliance sync via IntuneWindowsAgent URI." -Tag "Run"
-        Start-Process -FilePath $script:intuneAgentExePath -ArgumentList $script:intuneComplianceSyncArgument -PassThru -ErrorAction Stop | Out-Null
-        Write-Log "Intune compliance sync trigger started: $($script:intuneComplianceSyncArgument)" -Tag "Success"
+        Write-Log "Triggering IME sync via Shell.Application moniker: intunemanagementextension://syncapp" -Tag "Run"
+        $shell = New-Object -ComObject Shell.Application
+        $shell.Open("intunemanagementextension://syncapp")
+        Write-Log "IME sync trigger invoked: intunemanagementextension://syncapp" -Tag "Success"
     }
     catch {
-        # Do not fail remediation if the URI trigger is blocked in current context.
-        Write-Log "Could not trigger Intune compliance sync: $($_.Exception.Message)" -Tag "Debug"
+        # Best effort: do not fail remediation when URI moniker cannot be invoked in current context.
+        Write-Log "Could not trigger IME sync via Shell.Application: $($_.Exception.Message)" -Tag "Debug"
     }
 }
 
@@ -586,7 +580,7 @@ catch {
     Complete-Script -exitCode 1
 }
 
-Invoke-IntuneComplianceSyncTrigger
+Invoke-IMESyncAppMonikerTrigger
 
 Write-Log "Remediation finished for $($uniqueTargets.Count) app scope(s). Allow time for IME sync and retry." -Tag "Success"
 Complete-Script -exitCode 0
