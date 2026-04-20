@@ -131,13 +131,42 @@ if (-not (Test-Path -Path $wallpaperPath)) {
     Complete-Script -ExitCode 1
 }
 
-$currentWallpaper = (Get-ItemProperty -Path "HKCU:\Control Panel\Desktop" -Name "Wallpaper" -ErrorAction SilentlyContinue).Wallpaper
+$cspKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP"
 
-if ($currentWallpaper -eq $wallpaperPath) {
-    Write-Log "Wallpaper already set to desired path" -Tag "Success"
+$currentPath   = $null
+$currentUrl    = $null
+$currentStatus = $null
+
+if (Test-Path -Path $cspKey) {
+    $props = Get-ItemProperty -Path $cspKey -ErrorAction SilentlyContinue
+    if ($null -ne $props) {
+        $currentPath   = $props.DesktopImagePath
+        $currentUrl    = $props.DesktopImageUrl
+        $currentStatus = $props.DesktopImageStatus
+    }
+}
+
+$gotPath   = if ($null -eq $currentPath) { '' } else { "$currentPath" }
+$gotUrl    = if ($null -eq $currentUrl) { '' } else { "$currentUrl" }
+$gotStatus = if ($null -eq $currentStatus) { '' } else { "$currentStatus" }
+
+$pathOk = ($gotPath -eq $wallpaperPath)
+$urlOk  = ($gotUrl -eq $wallpaperPath)
+$statusOk = ($null -ne $currentStatus) -and (([int]$currentStatus) -eq 1)
+
+if ($pathOk -and $urlOk -and $statusOk) {
+    Write-Log "PersonalizationCSP correctly configured for: $wallpaperPath" -Tag "Success"
     Complete-Script -ExitCode 0
 }
-else {
-    Write-Log "Wallpaper mismatch: expected '$wallpaperPath', got '$currentWallpaper'" -Tag "Info"
-    Complete-Script -ExitCode 1
+
+if (-not $pathOk) {
+    Write-Log "DesktopImagePath mismatch: expected '$wallpaperPath', got '$gotPath'" -Tag "Info"
 }
+if (-not $urlOk) {
+    Write-Log "DesktopImageUrl mismatch: expected '$wallpaperPath', got '$gotUrl'" -Tag "Info"
+}
+if (-not $statusOk) {
+    Write-Log "DesktopImageStatus mismatch: expected '1', got '$gotStatus'" -Tag "Info"
+}
+
+Complete-Script -ExitCode 1

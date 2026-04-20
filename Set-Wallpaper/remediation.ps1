@@ -96,30 +96,32 @@ function Complete-Script {
     exit $ExitCode
 }
 
-# ---------------------------[ Wallpaper ]---------------------------
-function Set-DesktopWallpaper {
+function Set-PersonalizationCSP {
     [CmdletBinding()]
-    param ([string]$Path)
+    param ([string]$WallpaperPath)
 
-    $methodDefinition = @'
-    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern int SystemParametersInfo(int uAction, int uParam, string lpvParam, int fuWinIni);
-'@
+    $cspKey = "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\PersonalizationCSP"
 
-    $user32              = Add-Type -MemberDefinition $methodDefinition -Name 'User32' -Namespace 'Win32Wallpaper' -PassThru
-    $spiSetDeskWallpaper = 0x0014
-    $spifUpdateAndNotify = 0x03
+    try {
+        if (-not (Test-Path -Path $cspKey)) {
+            Write-Log "Creating PersonalizationCSP registry key" -Tag "Run"
+            New-Item -Path $cspKey -Force | Out-Null
+        }
 
-    Write-Log "Setting desktop wallpaper: $Path" -Tag "Run"
+        Write-Log "Writing DesktopImagePath: $WallpaperPath" -Tag "Run"
+        Set-ItemProperty -Path $cspKey -Name "DesktopImagePath" -Value $WallpaperPath -Type String -Force
 
-    $result = $user32::SystemParametersInfo($spiSetDeskWallpaper, 0, $Path, $spifUpdateAndNotify)
+        Write-Log "Writing DesktopImageUrl: $WallpaperPath" -Tag "Run"
+        Set-ItemProperty -Path $cspKey -Name "DesktopImageUrl" -Value $WallpaperPath -Type String -Force
 
-    if ($result -ne 0) {
-        Write-Log "Desktop wallpaper applied successfully" -Tag "Success"
+        Write-Log "Writing DesktopImageStatus: 1" -Tag "Run"
+        Set-ItemProperty -Path $cspKey -Name "DesktopImageStatus" -Value 1 -Type DWord -Force
+
+        Write-Log "PersonalizationCSP configured successfully" -Tag "Success"
         return $true
     }
-    else {
-        Write-Log "Failed to apply desktop wallpaper" -Tag "Error"
+    catch {
+        Write-Log "Failed to configure PersonalizationCSP: $_" -Tag "Error"
         return $false
     }
 }
@@ -159,7 +161,7 @@ if (-not (Test-Path -Path $wallpaperPath)) {
     Complete-Script -ExitCode 1
 }
 
-$applied = Set-DesktopWallpaper -Path $wallpaperPath
+$applied = Set-PersonalizationCSP -WallpaperPath $wallpaperPath
 
 if ($applied) {
     Complete-Script -ExitCode 0
