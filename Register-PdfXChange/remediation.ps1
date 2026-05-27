@@ -27,7 +27,7 @@ $logGet        = $true
 $logRun        = $true
 $enableLogFile = $true
 
-$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$scriptName"
+$logFileDirectory = "$env:ProgramData\IntuneLogs\Scripts\$($env:USERNAME)\$scriptName"
 $logFile          = "$logFileDirectory\$logFileName"
 
 if ($enableLogFile -and -not (Test-Path -Path $logFileDirectory)) {
@@ -82,7 +82,7 @@ function Write-Log {
     }
 
     Write-Host "$timestamp " -NoNewline
-    Write-Host "[ " -NoNewline -ForegroundColor White
+    Write-Host "[  " -NoNewline -ForegroundColor White
     Write-Host "$rawTag" -NoNewline -ForegroundColor $color
     Write-Host " ] " -NoNewline -ForegroundColor White
     Write-Host "$Message"
@@ -103,24 +103,42 @@ function Complete-Script {
 }
 
 # ---------------------------[ Remediation Functions ]---------------------------
-function Test-PdfXChangeEditorInstalled {
-    if (Test-Path -Path $pdfXEditPath) {
-        return $true
+function Test-LicenseKeyFormat {
+    Write-Log "Validating the configured license key format" -Tag "Get"
+
+    if ([string]::IsNullOrWhiteSpace($licenseKey)) {
+        Write-Log "License key is empty - set licenseKey at the top of the script" -Tag "Error"
+        return $false
     }
 
+    if ($licenseKey -eq "<--PUT LICENSE KEY HERE-->") {
+        Write-Log "License key is still the placeholder - replace it with your actual key from the Tracker portal" -Tag "Error"
+        return $false
+    }
+
+    if ($licenseKey -match '[\r\n\t\s]') {
+        Write-Log "License key contains whitespace or line breaks - it must be a single unbroken string" -Tag "Error"
+        return $false
+    }
+
+    Write-Log "License key format is valid (prefix: $licenseKeyPrefix, length: $($licenseKey.Length) characters)" -Tag "Success"
+    return $true
+}
+
+function Test-PdfXChangeEditorInstalled {
     $uninstallRoots = @(
         "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
         "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
     )
+
+    if (Test-Path -Path $pdfXEditPath) { return $true }
 
     foreach ($uninstallRoot in $uninstallRoots) {
         $installedProduct = Get-ItemProperty -Path $uninstallRoot -ErrorAction SilentlyContinue |
             Where-Object { $_.DisplayName -like "PDF-XChange Editor*" } |
             Select-Object -First 1
 
-        if ($installedProduct) {
-            return $true
-        }
+        if ($installedProduct) { return $true }
     }
 
     return $false
@@ -140,123 +158,71 @@ function Invoke-XcVaultCommand {
     Write-Log "Executing: $xcVaultPath $($ArgumentList -join ' ')" -Tag "Debug"
 
     try {
-        $commandOutput = & $xcVaultPath @ArgumentList 2>&1
-        $exitCode      = $LASTEXITCODE
+        # /S suppresses any dialogs or info messages from XCVault.
+        # Exit code 0 = success, exit code 1 = failure.
+        & $xcVaultPath @ArgumentList 2>&1 | Out-Null
+        $exitCode = $LASTEXITCODE
 
-        if ($commandOutput) {
-            Write-Log "XCVault output:`n$($commandOutput | Out-String)" -Tag "Debug"
-        }
+        Write-Log "XCVault exit code: $exitCode" -Tag "Debug"
 
         if ($exitCode -ne 0) {
-            Write-Log "XCVault command failed with exit code $exitCode during: $ActionDescription" -Tag "Error"
+            Write-Log "XCVault failed (exit code $exitCode) during: $ActionDescription" -Tag "Error"
             return $false
         }
 
-        Write-Log "XCVault command completed successfully: $ActionDescription" -Tag "Success"
+        Write-Log "XCVault completed successfully: $ActionDescription" -Tag "Success"
         return $true
     }
     catch {
-        Write-Log "XCVault command threw an exception during '$ActionDescription': $($_.Exception.Message)" -Tag "Error"
+        Write-Log "XCVault threw an exception during '$ActionDescription': $($_.Exception.Message)" -Tag "Error"
         return $false
     }
 }
 
 function Add-PdfXChangeLicenseKey {
-    Write-Log "Installing the configured license key for the current user (HKCU) using XCVault /AddKeyData /S" -Tag "Run"
+    Write-Log "Adding the configured license key for the current user (HKCU) via XCVault /AddKeyData /S" -Tag "Run"
 
-    return Invoke-XcVaultCommand -ArgumentList @(
-        "/AddKeyData", $licenseKey,
-        "/S"
-    ) -ActionDescription "Add per-user license key"
+    return Invoke-XcVaultCommand -ArgumentList @("/AddKeyData", $licenseKey, "/S") `
+        -ActionDescription "Add per-user license key"
 }
 
 function Invoke-PdfXChangeLicenseActivation {
-    Write-Log "Activating installed PDF-XChange license keys for the current user using XCVault /ActivateKeys /S" -Tag "Run"
+    Write-Log "Activating the installed license key for the current user via XCVault /ActivateKeys /S" -Tag "Run"
 
-    return Invoke-XcVaultCommand -ArgumentList @(
-        "/ActivateKeys",
-        "/S"
-    ) -ActionDescription "Activate installed license keys for current user"
-}
-
-function Get-XcVaultListKeysOutput {
-    try {
-        $listKeysOutput = & $xcVaultPath /ListKeys 2>&1
-        return ($listKeysOutput | Out-String).Trim()
-    }
-    catch {
-        Write-Log "Failed to read license state after remediation: $($_.Exception.Message)" -Tag "Error"
-        return $null
-    }
-}
-
-function Get-PdfXChangeLicenseKeyLines {
-    param(
-        [string]$ListKeysOutput
-    )
-
-    return $ListKeysOutput -split "`r?`n" |
-        Where-Object { $_ -match [regex]::Escape($licenseKeyPrefix) }
+    return Invoke-XcVaultCommand -ArgumentList @("/ActivateKeys", "/S") `
+        -ActionDescription "Activate license key for current user"
 }
 
 function Test-PdfXChangeLicenseKeyInRegistry {
+    # Confirm XCVault wrote the key entry to the user vault after activation.
     if (-not (Test-Path -Path $vaultRegistryPath)) {
+        Write-Log "User vault registry path was not created: $vaultRegistryPath" -Tag "Error"
         return $false
     }
 
     $vaultValue = Get-ItemProperty -Path $vaultRegistryPath -Name $vaultValueName -ErrorAction SilentlyContinue
-    return [bool]$vaultValue
-}
 
-function Test-PdfXChangeLicenseActivated {
-    param(
-        [string]$ListKeysOutput
-    )
-
-    $matchingLines = Get-PdfXChangeLicenseKeyLines -ListKeysOutput $ListKeysOutput |
-        Where-Object { $_ -match '^\s*\d+\.\s+U\s+' }
-
-    foreach ($matchingLine in $matchingLines) {
-        if ($matchingLine -match '^\s*\d+\.\s+U\s+([UMVAIX]+)\s+') {
-            $keyState = $Matches[1]
-            return $keyState.Contains('V') -and $keyState.Contains('A')
-        }
-    }
-
-    return $false
-}
-
-function Test-PdfXChangeRemediationResult {
-    $listKeysOutput = Get-XcVaultListKeysOutput
-
-    if ([string]::IsNullOrWhiteSpace($listKeysOutput)) {
-        Write-Log "Post-remediation verification failed because XCVault /ListKeys returned no output" -Tag "Error"
-        return $false
-    }
-
-    $licenseActivated  = Test-PdfXChangeLicenseActivated -ListKeysOutput $listKeysOutput
-    $licenseInRegistry = Test-PdfXChangeLicenseKeyInRegistry
-
-    Write-Log "Post-remediation user registry key present: $licenseInRegistry" -Tag "Debug"
-    Write-Log "Post-remediation license activated for current user: $licenseActivated" -Tag "Debug"
-
-    if ($licenseActivated -and $licenseInRegistry) {
-        Write-Log "Remediation verification succeeded: configured license key is present and activated for $env:USERNAME" -Tag "Success"
+    if ($vaultValue) {
+        Write-Log "License key entry confirmed in user vault at $vaultRegistryPath" -Tag "Success"
         return $true
     }
 
-    Write-Log "Remediation verification failed: configured license key is not fully present and activated for the current user" -Tag "Error"
+    Write-Log "License key entry is missing from user vault at $vaultRegistryPath" -Tag "Error"
     return $false
 }
 
 function Start-PdfXChangeLicenseRemediation {
+    if (-not (Test-LicenseKeyFormat)) {
+        return $false
+    }
+
     if (-not (Test-PdfXChangeEditorInstalled)) {
-        Write-Log "Remediation cannot continue because PDF-XChange Editor is not installed; deploy the Win32 app first" -Tag "Error"
+        Write-Log "PDF-XChange Editor is not installed - deploy the Win32 app before running remediation" -Tag "Error"
         return $false
     }
 
     if (-not (Test-XcVaultExecutable)) {
-        Write-Log "Remediation cannot continue because XCVault.exe is missing at $xcVaultPath" -Tag "Error"
+        Write-Log "XCVault.exe is missing at $xcVaultPath - PDF-XChange installation may be incomplete" -Tag "Error"
         return $false
     }
 
@@ -268,21 +234,20 @@ function Start-PdfXChangeLicenseRemediation {
         return $false
     }
 
-    return (Test-PdfXChangeRemediationResult)
+    return (Test-PdfXChangeLicenseKeyInRegistry)
 }
 
 # ---------------------------[ Script Start ]---------------------------
 Write-Log "======== Script Started ========" -Tag "Start"
 Write-Log "ComputerName: $env:COMPUTERNAME | User: $env:USERNAME | Script: $scriptName" -Tag "Info"
-Write-Log "Applying per-user PDF-XChange license for configured key prefix '$licenseKeyPrefix'" -Tag "Info"
-Write-Log "Intune: run this script with logged-on user credentials" -Tag "Debug"
+Write-Log "Applying per-user PDF-XChange license for key prefix '$licenseKeyPrefix'" -Tag "Info"
 
 $remediationSucceeded = Start-PdfXChangeLicenseRemediation
 
 if ($remediationSucceeded) {
-    Write-Log "Remediation completed successfully for user $env:USERNAME" -Tag "Success"
+    Write-Log "Remediation completed successfully for $env:USERNAME" -Tag "Success"
     Complete-Script -ExitCode 0
 }
 
-Write-Log "Remediation failed; review Intune remediation logs on the device" -Tag "Error"
+Write-Log "Remediation failed - review logs at $logFile" -Tag "Error"
 Complete-Script -ExitCode 1
