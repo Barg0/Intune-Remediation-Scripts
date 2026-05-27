@@ -17,7 +17,7 @@ $vaultRegistryPath   = "HKCU:\SOFTWARE\Tracker Software\Vault\0000"
 $vaultValueName      = "Value"
 $licenseKeyMatchLength = 10
 
-# Derived from $licenseKey — do not edit manually.
+# Derived from $licenseKey - do not edit manually.
 $licenseKeyPrefix = $licenseKey.Substring(0, [Math]::Min($licenseKeyMatchLength, $licenseKey.Length))
 
 # ---------------------------[ Logging Setup ]---------------------------
@@ -220,7 +220,7 @@ function Test-PdfXChangeLicenseKeyListed {
         return $true
     }
 
-    Write-Log "Configured license key prefix was found, but not in the current user (U) scope — per-user activation is required" -Tag "Error"
+    Write-Log "Configured license key prefix was found, but not in the current user (U) scope - per-user activation is required" -Tag "Error"
     Write-Log "Matching ListKeys line: $($matchingLines[0])" -Tag "Debug"
     return $false
 }

@@ -17,7 +17,7 @@ $vaultRegistryPath     = "HKCU:\SOFTWARE\Tracker Software\Vault\0000"
 $vaultValueName        = "Value"
 $licenseKeyMatchLength = 10
 
-# Derived from $licenseKey — do not edit manually.
+# Derived from $licenseKey - do not edit manually.
 $licenseKeyPrefix = $licenseKey.Substring(0, [Math]::Min($licenseKeyMatchLength, $licenseKey.Length))
 
 # ---------------------------[ Logging Setup ]---------------------------
