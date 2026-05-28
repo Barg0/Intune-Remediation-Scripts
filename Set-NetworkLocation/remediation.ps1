@@ -167,6 +167,59 @@ function New-NetworkLocationShortcut {
     Write-Log "Shortcut created" -Tag "Success"
 }
 
+function Test-NetworkLocationState {
+    # Returns $true only when every component is already in the desired state.
+    # Any missing or mismatched element causes an early $false return so the
+    # caller can decide whether remediation is actually needed.
+    param(
+        [string]$FolderPath,
+        [string]$IniPath,
+        [string]$ShortcutPath,
+        [string]$Target
+    )
+
+    Write-Log "Checking current state" -Tag "Get"
+
+    # 1 - folder must exist
+    if (-not (Test-Path -Path $FolderPath -PathType Container)) {
+        Write-Log "State check: location folder missing" -Tag "Get"
+        return $false
+    }
+
+    # 2 - folder must carry the ReadOnly attribute
+    $folder = Get-Item -Path $FolderPath -Force
+    if (-not ($folder.Attributes -band [System.IO.FileAttributes]::ReadOnly)) {
+        Write-Log "State check: ReadOnly attribute missing on folder" -Tag "Get"
+        return $false
+    }
+
+    # 3 - desktop.ini must exist and contain the expected CLSID line
+    if (-not (Test-Path -Path $IniPath -PathType Leaf)) {
+        Write-Log "State check: desktop.ini missing" -Tag "Get"
+        return $false
+    }
+    $iniContent = Get-Content -Path $IniPath -Raw -Encoding ASCII -ErrorAction SilentlyContinue
+    if ($iniContent -notmatch [regex]::Escape("CLSID2={0AFACED1-E828-11D1-9187-B532F1E9575D}")) {
+        Write-Log "State check: desktop.ini content mismatch" -Tag "Get"
+        return $false
+    }
+
+    # 4 - target.lnk must exist and point to the correct target
+    if (-not (Test-Path -Path $ShortcutPath -PathType Leaf)) {
+        Write-Log "State check: shortcut missing" -Tag "Get"
+        return $false
+    }
+    $shell           = New-Object -ComObject WScript.Shell
+    $existingTarget  = $shell.CreateShortcut($ShortcutPath).TargetPath
+    if ($existingTarget -ne $Target) {
+        Write-Log "State check: shortcut target mismatch (current: $existingTarget)" -Tag "Get"
+        return $false
+    }
+
+    Write-Log "State check: all components are compliant" -Tag "Get"
+    return $true
+}
+
 function Set-NetworkLocation {
     param(
         [string]$FolderPath,
@@ -186,6 +239,17 @@ function Set-NetworkLocation {
 Write-Log "Remediating: $networkLocationName -> $networkLocationTarget" -Tag "Info"
 
 try {
+    $alreadyCompliant = Test-NetworkLocationState `
+        -FolderPath   $locationFolderPath `
+        -IniPath      $desktopIniPath `
+        -ShortcutPath $shortcutFilePath `
+        -Target       $networkLocationTarget
+
+    if ($alreadyCompliant) {
+        Write-Log "Network location already in desired state - no changes applied" -Tag "Success"
+        Complete-Script -ExitCode 0
+    }
+
     Set-NetworkLocation `
         -FolderPath   $locationFolderPath `
         -IniPath      $desktopIniPath `
